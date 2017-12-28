@@ -7,5 +7,5 @@ setup(name='rtca',
       author='Michal Kahle',
       author_email='michalkahle@gmail.com',
       license='MIT',
-      packages=['rtca'],
+      py_modules=['rtca'],
       zip_safe=False)

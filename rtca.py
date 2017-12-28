@@ -4,6 +4,9 @@ import pandas_access as mdb
 import glob
 import re
 
+def test():
+    return 2
+
 def load_dir(dir, **kwargs):
     files = [os.path.join(dir, f) for f in sorted(os.listdir(dir)) if f.lower().endswith('.plt')]
     data = load_files(files, **kwargs)
@@ -23,11 +26,12 @@ def load_files(file_list, barcode_re='_(A\\d{6})\\.PLT$', **kwargs):
         org['file'] = len(plates[barcode])
         plates[barcode].append(org)
     # plates = {barcode:pd.concat(plates[barcode]) for barcode in plates}
+    ll = []
     for barcode in plates:
         plate = pd.concat(plates[barcode], ignore_index=True)
         plate = normalize_plate(plate)
-        plates[barcode] = plate
-    return plates
+        ll.append(plate)
+    return pd.concat(ll, ignore_index=True)
 
 def normalize_plate(plate, zerotime_file=1, spike_treshold=3): #, zerotime_offset=120
     zerotime = plate[(plate.file == zerotime_file) & (plate.tp == 3)].dt.iloc[0]
