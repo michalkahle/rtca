@@ -3,9 +3,7 @@ import pandas as pd
 import pandas_access as mdb
 import glob
 import re
-
-def test():
-    return 2
+import numpy as np
 
 def load_dir(dir, **kwargs):
     files = [os.path.join(dir, f) for f in sorted(os.listdir(dir)) if f.lower().endswith('.plt')]
@@ -25,23 +23,28 @@ def load_files(file_list, barcode_re='_(A\\d{6})\\.PLT$', **kwargs):
             plates[barcode] = []
         org['file'] = len(plates[barcode])
         plates[barcode].append(org)
-    # plates = {barcode:pd.concat(plates[barcode]) for barcode in plates}
     ll = []
     for barcode in plates:
         plate = pd.concat(plates[barcode], ignore_index=True)
         plate = normalize_plate(plate)
         ll.append(plate)
-    return pd.concat(ll, ignore_index=True)
+    df = pd.concat(ll, ignore_index=True)
+    grouped = df.groupby(['barcode', 'well'], group_keys=False)
+    df['oci'] = grouped['org'].apply(lambda s: s - s.iloc[0]) / 15
+    df['ci'] = grouped['oci'].apply(spike_filter)
+    df['nci'] = grouped.apply(lambda gr: gr['ci'] / gr.iloc[np.where(gr.time <= 0)[0][-1]]['ci'])
+    # df['nci'] = df['ci']
+    return df
 
-def normalize_plate(plate, zerotime_file=1, spike_treshold=3): #, zerotime_offset=120
-    zerotime = plate[(plate.file == zerotime_file) & (plate.tp == 3)].dt.iloc[0]
-    plate['time'] = pd.to_numeric(plate['dt'] - zerotime) / 3.6e12
-    grouped = plate.groupby('well')
-    plate['oci'] = grouped['org'].apply(lambda s: s - s.iloc[0]) / 15
-    plate['ci'] = grouped['oci'].apply(lambda s: s)
-
+def normalize_plate(plate, zerotime_file=1, zerotime_point=3, zerotime_offset=120):
+    zerotime = plate[(plate.file == zerotime_file) & (plate.tp == zerotime_point)].dt.iloc[0]
+    plate['time'] = pd.to_numeric(plate['dt'] - zerotime) / 3.6e12 + zerotime_offset / 3600
     # print(zerotime)
     return plate
+
+def spike_filter(s, threshold=3):
+    s[(s - s.shift(1) > threshold) & (s - s.shift(-1) > threshold)] = np.nan
+    return s
 
 def load_file(filename):
     if not os.path.isfile(filename):
