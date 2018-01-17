@@ -101,28 +101,33 @@ def plot_overview(df, x='time', y='nci', group='barcode'):
     fig, ax = plt.subplots(1, 1, figsize=(24, 16))
     ax.set_prop_cycle(mpl.rcParams['axes.prop_cycle'][:3])
     r_max, c_max = df.row.max(), df.col.max()
-    x_min, y_min = df[x].min(), df[y].min()
-    x_offset = (df[x].max() - x_min) * 1.1
-    y_offset = (df[y].max() - y_min) * 1.1
+    x_min, y_min, x_max, y_max = df[x].min(), df[y].min(), df[x].max(), df[y].max()
+    x_offset = (x_max - x_min)
+    y_offset = (y_max - y_min)
+    _, ylim = ax.set_ylim([0, (r_max + 2) * y_offset * 1.1])
+    _, xlim = ax.set_xlim([0, (c_max + 2) * x_offset * 1.1])
     plt.setp(ax, 'frame_on', False)
-    _, ylim = ax.set_ylim([0, (r_max + 2) * y_offset])
-    ax.set_xlim([0, (c_max + 2) * x_offset])
     ax.set_xticks([])
     ax.set_yticks([])
-    def subplot(sf):
-        r1 = sf.iloc[0]
-        x_pos = (r1.col+1)*x_offset - x_min
-        y_pos = ylim - (r1.row +2)*y_offset - y_min
-        ax.plot(sf[x] + x_pos, sf[y] + y_pos, '-')
-        if r1.row == 0:
-            ax.text(x_pos+0.25*x_offset, 
-                    y_pos+1.5*y_offset, 
-                    r1.col, size=20, ha='center',)
-        if r1.col == 0:
-            ax.text(x_pos-.75*x_offset, 
-                    y_pos+.5*y_offset, 
-                    r1.row, size=20, ha='center',)
-    df.groupby(['row', 'col', group]).apply(subplot)
+    rows, cols, grs = df.row.unique(), df.col.unique(), df[group].unique()
+    bcg = []
+    for row in rows:
+        rr = df[df.row==row]
+        y_pos = ylim - (row + 2) * y_offset * 1.1
+        # row label
+        ax.text(0.75*x_offset, y_pos+.5*y_offset, row, size=20, ha='right', va='center')
+        for col in cols:
+            cc = rr[rr.col==col]
+            x_pos = (col + 1) * x_offset * 1.1
+            bcg.append(mpl.patches.Rectangle((x_pos, y_pos), x_offset, y_offset))
+            # col label
+            if row == 0:
+                ax.text(x_pos+0.5*x_offset, y_pos+1.25*y_offset, col, size=20, ha='center')
+            for gr in grs:
+                sf = cc[cc[group]==gr]
+                ax.plot(sf[x] + x_pos - x_min, sf[y] + y_pos - y_min, '-')
+    pc = mpl.collections.PatchCollection(bcg, facecolor='#f0f0f0')
+    ax.add_collection(pc)
 
 
 
