@@ -14,36 +14,68 @@ def load_dir(dir, **kwargs):
 
 def load_files(file_list, barcode_re='_(A\\d{6})\\.PLT$', **kwargs):
     regex = re.compile(barcode_re)
+    rows_series = np.array(list('ABCDEFGHIJKLMNOP'))
     plates = {}
     ll = []
     for filename in file_list:
         print(filename)
         org = load_file(filename)
         match = regex.search(filename)
-        barcode = match.group(1) if match else None
+        barcode = match.group(1) if match else np.nan
         org['barcode'] = barcode
         if not barcode in plates:
-            plates[barcode] = 0
-        else:
-            plates[barcode] += 1
-        org['file'] = plates[barcode]
+            plates[barcode] = [0, 0]
+        org['otp'] = org['tp']
+        org['tp'] += plates[barcode][1]
+        plates[barcode][1] += max(org['tp'])
+
+        plates[barcode][0] += 1
+        org['file'] = plates[barcode][0]
+        org['well'] = rows_series[org['row']] + (org['col'] + 1).astype(str)
+        if barcode is not np.nan:
+            org['well'] = barcode + '_' + org['well']
         ll.append(org)
     df = pd.concat(ll, ignore_index=True)
     df = df.groupby('barcode').apply(normalize_plate)
-    grouped = df.groupby(['barcode', 'well'], group_keys=False)
-    df['oci'] = grouped['org'].apply(lambda s: s - s.iloc[0]) / 15
-    df['ci'] = grouped['oci'].apply(spike_filter)
-    df['nci'] = grouped.apply(lambda gr: gr['ci'] / gr.iloc[np.where(gr.time <= 0)[0][-1]]['ci'])
+    df = df.groupby('barcode').apply(normalize_plate)
+    fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(12,4))
+    df = df.groupby('well').apply(lambda x: normalize_well(x, fig))
+    df = df.drop(['dt', 'org', 'file', 'otp'], axis=1)
+    df = df.sort_values(['tp', 'row', 'col'])
+    df = df.reset_index(drop=True)
     return df
 
-def normalize_plate(plate, zerotime_file=1, zerotime_point=3, zerotime_offset=120):
-    zerotime = plate[(plate.file == zerotime_file) & (plate.tp == zerotime_point)].dt.iloc[0]
+def normalize_plate(plate, zerotime_file=2, zerotime_point=3, zerotime_offset=120):
+    zerotime = plate[(plate.file == zerotime_file) & (plate.otp == zerotime_point)].dt.iloc[0]
     plate['time'] = pd.to_numeric(plate['dt'] - zerotime) / 3.6e12 + zerotime_offset / 3600
     return plate
 
-def spike_filter(s, threshold=3):
-    s[(s - s.shift(1) > threshold) & (s - s.shift(-1) > threshold)] = np.nan
-    return s
+def normalize_well(well, fig, spike_threshold=3):
+    ax0, ax1 = fig.get_axes()
+    s = well.org
+    well['ci'] = (s - s.iloc[0]) / 15
+    outliers = well.loc[abs(well.ci) > 100].copy()
+    if not outliers.empty:
+        outliers['blocks'] = ((outliers.tp - outliers.tp.shift(1)) > 1).cumsum()
+        ax0.plot(well.tp, well.ci, label=outliers.well.iloc[0])
+        ax0.scatter(outliers.tp, outliers.ci, facecolors='none', edgecolors='r', label=None)
+        ax0.legend(); ax0.set_xlabel('tp'); ax0.set_xlabel('ci'); ax0.set_title('outliers')
+        def fix_outlier(ol):
+            fix = (well[well.tp == ol.tp.min()-1].ci.iloc[0] + well[well.tp == ol.tp.max()+1].ci.iloc[0]) /2
+            well.loc[ol.index, 'ci'] = fix
+        outliers.groupby('blocks').filter(fix_outlier)
+    s = well.ci
+    spikes = well[(s - s.shift(1) > spike_threshold) & (s - s.shift(-1) > spike_threshold)]
+    if not spikes.empty:
+        ax1.plot(well.tp, well.ci, label=spikes.well.iloc[0])
+        ax1.scatter(spikes.tp, spikes.ci, facecolors='none', edgecolors='r', label=None)
+        ax1.legend(); ax1.set_xlabel('tp'); ax1.set_ylabel('ci'); ax1.set_title('spikes')
+        for ii, ol in spikes.iterrows():
+            fix = (well[well.tp == ol.tp-1].ci.iloc[0] + well[well.tp == ol.tp+1].ci.iloc[0]) /2
+            well.loc[ii, 'ci'] = fix
+            
+    well['nci'] = well['ci'] / well.iloc[np.where(well.time <= 0)[0][-1]]['ci']
+    return well
 
 def load_file(filename):
     if not os.path.isfile(filename):
@@ -76,9 +108,9 @@ def load_file(filename):
     org.org = pd.to_numeric(org.org)
     org = ttimes.join(org)
     org = org.reset_index()
-    org['well'] = org['row'] * n_cols + org['col']
-    org = org.sort_values(by=['tp', 'well'])
-    org = org[['tp', 'row', 'col', 'well', 'dt', 'org']]
+    org = org[['tp', 'row', 'col', 'dt', 'org']]
+    org = org.sort_values(by=['tp', 'row', 'col'])
+    org = org.reset_index(drop=True)
     return org
 
 # def scan():
@@ -87,15 +119,6 @@ def load_file(filename):
 #             if name.lower().endswith('.plt'):
 #                 filename = os.path.join(dirpath, name)
 #                 load_file(filename)
-
-def show_spikes(df):
-    def plot_spikes(spikes):
-        s = spikes.iloc[0]
-        df[(df.well == s.well)&(df.barcode == s.barcode)].oci.plot(label=(s.barcode, s.well))
-        plt.scatter(spikes.time, spikes.oci, c='r', label=None)
-        return True
-    df[np.isnan(df.ci)].groupby(['barcode','well']).filter(plot_spikes)
-    plt.legend()
 
 def plot_overview(df, x='time', y='nci', group='barcode'):
     fig, ax = plt.subplots(1, 1, figsize=(24, 16))
@@ -129,6 +152,27 @@ def plot_overview(df, x='time', y='nci', group='barcode'):
     pc = mpl.collections.PatchCollection(bcg, facecolor='#f0f0f0')
     ax.add_collection(pc)
 
+def plot(df, x='time', y='nci', color=None):
+    from collections import OrderedDict
+    fig, ax = plt.subplots(figsize=(18,12))
+    # df = df.sort_values(x)
+
+    if color is None:
+        for well, group in df.groupby('well'):
+            ax.plot(group[x], group[y], color='k')
+        handles, labels = ax.get_legend_handles_labels()
+        by_label = OrderedDict(zip(labels, handles))
+    else:
+        groups = df[color].unique()
+        cmap = plt.get_cmap('gist_rainbow')
+        # cmap = plt.get_cmap('viridis')
+        color_map = dict(zip(groups, cmap((groups - groups.min()) / (groups.max()-groups.min()))))
+        
+        for (cc, well), group in df.groupby([color, 'well']):
+            ax.plot(group[x], group[y], color=color_map[cc]*.75, label=cc)
+        handles, labels = ax.get_legend_handles_labels()
+        by_label = OrderedDict(zip(labels, handles))
+        ax.legend(by_label.values(), by_label.keys(), title=color)
 
 
 if __name__ == '__main__':
