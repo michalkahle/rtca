@@ -8,12 +8,14 @@ import matplotlib.pyplot as plt
 import matplotlib as mpl
 from sklearn.decomposition import PCA
 
+from IPython.core.debugger import set_trace
+
 def load_dir(dir, **kwargs):
     files = [os.path.join(dir, f) for f in sorted(os.listdir(dir)) if f.lower().endswith('.plt')]
     data = load_files(files, **kwargs)
     return data
 
-def load_files(file_list, barcode_re='_(A\\d{6})\\.PLT$', **kwargs):
+def load_files(file_list, barcode_re='_(A\\d{6})\\.PLT$', layout=None, **kwargs):
     regex = re.compile(barcode_re)
     rows_series = np.array(list('ABCDEFGHIJKLMNOP'))
     plates = {}
@@ -40,12 +42,21 @@ def load_files(file_list, barcode_re='_(A\\d{6})\\.PLT$', **kwargs):
     df = df.groupby('barcode').apply(lambda x: normalize_plate(x, **kwargs))
     fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(12,4))
     df = df.groupby('well').apply(lambda x: normalize_well(x, fig))
+    mm = df[df.tp == df.tp.min()].nl2.min()
+    df.loc[df.nl2<mm, 'nl2'] = mm
     df = df.drop(['dt', 'org', 'file', 'otp'], axis=1)
+
+    if layout is not None:
+        df = pd.merge(df, layout)
+
+
     df = df.sort_values(['tp', 'row', 'col'])
     df = df.reset_index(drop=True)
     return df
 
 def normalize_plate(plate, zerotime_file=2, zerotime_point=4, zerotime_offset=120):
+    if plate.file.max() < zerotime_file:
+        raise ValueError('Not enough files (%i) present.' % zerotime_file)
     zerotime = plate[(plate.file == zerotime_file) & (plate.otp == zerotime_point)].dt.iloc[0]
     plate['time'] = pd.to_numeric(plate['dt'] - zerotime) / 3.6e12 + zerotime_offset / 3600
     return plate
@@ -61,7 +72,13 @@ def normalize_well(well, fig, spike_threshold=3):
         ax0.scatter(outliers.tp, outliers.ci, facecolors='none', edgecolors='r', label=None)
         ax0.legend(); ax0.set_xlabel('tp'); ax0.set_xlabel('ci')
         def fix_outlier(ol):
-            fix = (well[well.tp == ol.tp.min()-1].ci.iloc[0] + well[well.tp == ol.tp.max()+1].ci.iloc[0]) /2
+            try:
+                fix = (well[well.tp == ol.tp.min()-1].ci.iloc[0] + well[well.tp == ol.tp.max()+1].ci.iloc[0]) /2
+            except IndexError:
+                if well.tp.min() < ol.tp.min():
+                    fix = well[well.tp == ol.tp.min()-1].ci.iloc[0]
+                else:
+                    fix = well[well.tp == ol.tp.max()+1].ci.iloc[0]
             well.loc[ol.index, 'ci'] = fix
         outliers.groupby('blocks').filter(fix_outlier)
     s = well.ci
@@ -78,10 +95,10 @@ def normalize_well(well, fig, spike_threshold=3):
     well['nci'] = well['ci'] / well.iloc[norm_point]['ci']
 
     ci = well['ci'].copy() + 1
-    ci[ci < 1] = .999
+    ci[ci <= 0] = .001
     well['l2'] = np.log2(ci)
     well['nl2'] = well['l2'] - well.iloc[norm_point]['l2']
-
+    well.loc[well.l2<0, 'l2'] = 0
     return well
 
 def load_file(filename):
@@ -201,11 +218,16 @@ def plot3d(dd, color=None, factor=False, cmap='tab10', hover='well'):
     layout = {'height': 600, 'margin': {'b': 0, 'l': 0, 'r': 0, 't': 0}, 'paper_bgcolor': '#f0f0f0', 'width': 800,
              'scene': {'xaxis':{'title':'PC1'}, 'yaxis':{'title':'PC2'}, 'zaxis':{'title':'PC3'}}}
 
+    # this is a hack to fix the hover texts on the first trace (we make a fake one which is broken)
+    # https://github.com/plotly/plotly.py/issues/952
+    traces = [go.Scatter3d(x=[0], y=[0], z=[0],
+        marker={'color':'rgb(0, 0, 0)', 'opacity': 1, 'size': 0.1}, showlegend=False)]
+
+
     if factor: #(dd[color].dtype == np.dtype('O')) or
         tab10 = plt.get_cmap(cmap)
         def get_plotly_color(cm, n):
             return 'rgb' + str(cm(n, bytes=True)[:3])
-        traces = []
         for ii, (name, sg) in enumerate(dd.groupby(color)):
             marker['color'] = get_plotly_color(tab10, ii)
             trace_params['marker'] = marker
@@ -218,7 +240,7 @@ def plot3d(dd, color=None, factor=False, cmap='tab10', hover='well'):
         marker['colorbar'] = go.ColorBar(title=color, thickness=10, len=.3, y=.8)
         trace_params['marker'] = marker
         trace = go.Scatter3d(x=dd.PC1, y=dd.PC2, z=dd.PC3, hovertext=dd.id, **trace_params)
-        traces = [trace]
+        traces.append(trace)
         layout['showlegend'] = False
 
     fig = go.Figure(data=traces, layout=go.Layout(layout))
