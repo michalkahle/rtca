@@ -15,16 +15,26 @@ def load_dir(dir, **kwargs):
     data = load_files(files, **kwargs)
     return data
 
-def load_files(file_list, barcode_re='_(A\\d{6})\\.PLT$', layout=None, **kwargs):
-    regex = re.compile(barcode_re)
+# barcode_re='_(A\\d{6})\\.PLT$'
+def load_files(file_list, barcode_re=None, layout=None, **kwargs):
+    if barcode_re is not None:
+        barcode_re = re.compile(barcode_re)
     rows_series = np.array(list('ABCDEFGHIJKLMNOP'))
     plates = {}
     ll = []
     for filename in file_list:
         print(filename)
         org = load_file(filename)
-        match = regex.search(filename)
-        barcode = match.group(1) if match else np.nan
+        if barcode_re is not None:
+            match = barcode_re.search(filename)
+            if match is not None:
+                barcode = match.group(1)
+            else:
+                raise Exception(
+                    'barcdode_re="%s" not found in file name: "%s"' % (barcode_re.pattern, filename))
+        else:
+            barcode = np.nan
+
         org['barcode'] = barcode
         if not barcode in plates:
             plates[barcode] = [0, 0]
@@ -39,7 +49,10 @@ def load_files(file_list, barcode_re='_(A\\d{6})\\.PLT$', layout=None, **kwargs)
             org['well'] = barcode + '_' + org['well']
         ll.append(org)
     df = pd.concat(ll, ignore_index=True)
-    df = df.groupby('barcode').apply(lambda x: normalize_plate(x, **kwargs))
+    if barcode is not np.nan:
+        df = df.groupby('barcode').apply(lambda x: normalize_plate(x, **kwargs))
+    else:
+        df = normalize_plate(df, **kwargs)
     fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(12,4))
     df = df.groupby('well').apply(lambda x: normalize_well(x, fig))
     mm = df[df.tp == df.tp.min()].nl2.min()
@@ -54,9 +67,10 @@ def load_files(file_list, barcode_re='_(A\\d{6})\\.PLT$', layout=None, **kwargs)
     df = df.reset_index(drop=True)
     return df
 
-def normalize_plate(plate, zerotime_file=2, zerotime_point=4, zerotime_offset=120):
+# zerotime_file=2, zerotime_point=4, zerotime_offset=120
+def normalize_plate(plate, zerotime_file=1, zerotime_point=1, zerotime_offset=0):
     if plate.file.max() < zerotime_file:
-        raise ValueError('Not enough files (%i) present.' % zerotime_file)
+        raise ValueError('Not enough files. Zero time point should be in file %i but only %i file(s) present.' % (zerotime_file, plate.file.max()))
     zerotime = plate[(plate.file == zerotime_file) & (plate.otp == zerotime_point)].dt.iloc[0]
     plate['time'] = pd.to_numeric(plate['dt'] - zerotime) / 3.6e12 + zerotime_offset / 3600
     return plate
@@ -91,14 +105,18 @@ def normalize_well(well, fig, spike_threshold=3):
             fix = (well[well.tp == ol.tp-1].ci.iloc[0] + well[well.tp == ol.tp+1].ci.iloc[0]) /2
             well.loc[ii, 'ci'] = fix
 
-    norm_point = np.where(well.time <= 0)[0][-1]
-    well['nci'] = well['ci'] / well.iloc[norm_point]['ci']
-
     ci = well['ci'].copy() + 1
     ci[ci <= 0] = .001
     well['l2'] = np.log2(ci)
-    well['nl2'] = well['l2'] - well.iloc[norm_point]['l2']
-    well.loc[well.l2<0, 'l2'] = 0
+
+    if well.time.min() < 0:
+        norm_point = np.where(well.time <= 0)[0][-1]
+        well['nci'] = well['ci'] / well.iloc[norm_point]['ci']
+        well['nl2'] = well['l2'] - well.iloc[norm_point]['l2']
+        well.loc[well.l2<0, 'l2'] = 0
+    else:
+        well['nci'] = well['ci']
+        well['nl2'] = well['l2']
     return well
 
 def load_file(filename):
