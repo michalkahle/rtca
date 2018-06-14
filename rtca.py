@@ -10,20 +10,23 @@ from sklearn.decomposition import PCA
 
 from IPython.core.debugger import set_trace
 
-def load_dir(dir, **kwargs):
-    files = [os.path.join(dir, f) for f in sorted(os.listdir(dir)) if f.lower().endswith('.plt')]
+def load_dir(directory, **kwargs):
+    files = [os.path.join(directory, f) for f in sorted(os.listdir(directory)) if f.lower().endswith('.plt')]
     data = load_files(files, **kwargs)
+    if callable(kwargs.get('fix')):
+        data = kwargs['fix'](data)
+    data = normalize(data, **kwargs)
     return data
 
 # barcode_re='_(A\\d{6})\\.PLT$'
-def load_files(file_list, barcode_re=None, layout=None, **kwargs):
+def load_files(file_list, barcode_re=None, **kwargs):
     if barcode_re is not None:
         barcode_re = re.compile(barcode_re)
     rows_series = np.array(list('ABCDEFGHIJKLMNOP'))
     plates = {}
     ll = []
     for filename in file_list:
-        print(filename)
+        # print(filename)
         org = load_file(filename)
         if barcode_re is not None:
             match = barcode_re.search(filename)
@@ -40,35 +43,35 @@ def load_files(file_list, barcode_re=None, layout=None, **kwargs):
             plates[barcode] = [0, 0]
         org['otp'] = org['tp']
         org['tp'] += plates[barcode][1]
-        plates[barcode][1] += max(org['tp'])
-
+        plates[barcode][1] = org['tp'].max()
         plates[barcode][0] += 1
         org['file'] = plates[barcode][0]
         org['well'] = rows_series[org['row']] + (org['col'] + 1).astype(str)
         if barcode is not np.nan:
             org['well'] = barcode + '_' + org['well']
         ll.append(org)
-    df = pd.concat(ll, ignore_index=True)
-    if barcode is not np.nan:
-        df = df.groupby('barcode').apply(lambda x: normalize_plate(x, **kwargs))
-    else:
-        df = normalize_plate(df, **kwargs)
+    return pd.concat(ll, ignore_index=True)
+
+def normalize(df, layout=None, **kwargs):
+    # if barcode is not np.nan:
+    #     df = df.groupby('barcode').apply(lambda x: normalize_plate(x, **kwargs))
+    # else:
+    #     df = normalize_plate(df, **kwargs)
+    df = df.groupby('barcode').apply(lambda x: normalize_plate(x, **kwargs))
+
     fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(12,4))
     df = df.groupby('well').apply(lambda x: normalize_well(x, fig))
     mm = df[df.tp == df.tp.min()].nl2.min()
     df.loc[df.nl2<mm, 'nl2'] = mm
-    df = df.drop(['dt', 'org', 'file', 'otp'], axis=1)
-
+    df = df.drop(kwargs.get('drop', ['dt', 'file', 'org', 'otp']), axis=1)
     if layout is not None:
         df = pd.merge(df, layout)
-
-
     df = df.sort_values(['tp', 'row', 'col'])
     df = df.reset_index(drop=True)
     return df
 
 # zerotime_file=2, zerotime_point=4, zerotime_offset=120
-def normalize_plate(plate, zerotime_file=1, zerotime_point=1, zerotime_offset=0):
+def normalize_plate(plate, zerotime_file=1, zerotime_point=1, zerotime_offset=0, **kwargs):
     if plate.file.max() < zerotime_file:
         raise ValueError('Not enough files. Zero time point should be in file %i but only %i file(s) present.' % (zerotime_file, plate.file.max()))
     zerotime = plate[(plate.file == zerotime_file) & (plate.otp == zerotime_point)].dt.iloc[0]
@@ -84,7 +87,7 @@ def normalize_well(well, fig, spike_threshold=3):
         outliers['blocks'] = ((outliers.tp - outliers.tp.shift(1)) > 1).cumsum()
         ax0.plot(well.tp, well.ci, label=outliers.well.iloc[0])
         ax0.scatter(outliers.tp, outliers.ci, facecolors='none', edgecolors='r', label=None)
-        ax0.legend(); ax0.set_xlabel('tp'); ax0.set_xlabel('ci')
+        ax0.legend(); ax0.set_xlabel('tp'); ax0.set_ylabel('ci')
         def fix_outlier(ol):
             try:
                 fix = (well[well.tp == ol.tp.min()-1].ci.iloc[0] + well[well.tp == ol.tp.max()+1].ci.iloc[0]) /2
@@ -140,6 +143,7 @@ def load_file(filename):
     ttimes['dt'] = pd.to_datetime(ttimes['dt'])
     ttimes = ttimes.set_index('tp')
     org = mdb.read_table(filename, 'Org10K').drop('TestOrder', axis=1)
+    assert org.shape[0] > 0, '%s contains no data!' % filename
     org = org.rename({'TimePoint':'tp'}, axis=1).set_index(['tp', 'Row'])
     n_cols = org.shape[1]
     org.columns = pd.MultiIndex.from_product([['org'], range(n_cols)], names=['value', 'col'])
@@ -161,6 +165,18 @@ def load_file(filename):
 #             if name.lower().endswith('.plt'):
 #                 filename = os.path.join(dirpath, name)
 #                 load_file(filename)
+
+def plate_96():
+    ll = pd.DataFrame(dict(
+        row = np.repeat(np.arange(8),12),
+        col = np.tile(np.arange(12),8),
+        well = np.arange(96),
+        edge=0))
+    ll.edge[ll.row < 1] += 1
+    ll.edge[ll.col < 1] += 1
+    ll.edge[ll.row > ll.row.max() - 1] += 1
+    ll.edge[ll.col > ll.col.max() - 1] += 1
+    return ll
 
 def plate_384():
     ll = pd.DataFrame(dict(row = np.repeat(np.arange(16),24), col = np.tile(np.arange(24),16), edge=0))
