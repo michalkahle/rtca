@@ -7,8 +7,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib as mpl
 from sklearn.decomposition import PCA
-
-from IPython.core.debugger import set_trace
+import warnings
+# from IPython.core.debugger import set_trace
 
 def load_dir(directory, **kwargs):
     files = [os.path.join(directory, f) for f in sorted(os.listdir(directory)) if f.lower().endswith('.plt')]
@@ -46,7 +46,7 @@ def load_files(file_list, barcode_re=None, **kwargs):
         plates[barcode][1] = org['tp'].max()
         plates[barcode][0] += 1
         org['file'] = plates[barcode][0]
-        org['well'] = rows_series[org['row']] + (org['col'] + 1).astype(str)
+        org['well'] = rows_series[org['row']] + (org['col'] + 1).astype(str) #.str.zfill(2)
         if barcode is not np.nan:
             org['well'] = barcode + '_' + org['well']
         ll.append(org)
@@ -61,8 +61,6 @@ def normalize(df, layout=None, **kwargs):
 
     fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(12,4))
     df = df.groupby('well').apply(lambda x: normalize_well(x, fig))
-    mm = df[df.tp == df.tp.min()].nl2.min()
-    df.loc[df.nl2<mm, 'nl2'] = mm
     df = df.drop(kwargs.get('drop', ['dt', 'file', 'org', 'otp']), axis=1)
     if layout is not None:
         df = pd.merge(df, layout)
@@ -80,8 +78,7 @@ def normalize_plate(plate, zerotime_file=1, zerotime_point=1, zerotime_offset=0,
 
 def normalize_well(well, fig, spike_threshold=3):
     ax0, ax1 = fig.get_axes(); ax0.set_title('outliers'); ax1.set_title('spikes')
-    s = well.org
-    well['ci'] = (s - s.iloc[0]) / 15
+    well['ci'] = (well.org - well.org.loc[well.tp.idxmin()]) / 15
     outliers = well.loc[abs(well.ci) > 100].copy()
     if not outliers.empty:
         outliers['blocks'] = ((outliers.tp - outliers.tp.shift(1)) > 1).cumsum()
@@ -108,15 +105,20 @@ def normalize_well(well, fig, spike_threshold=3):
             fix = (well[well.tp == ol.tp-1].ci.iloc[0] + well[well.tp == ol.tp+1].ci.iloc[0]) /2
             well.loc[ii, 'ci'] = fix
 
-    ci = well['ci'].copy() + 1
-    ci[ci <= 0] = .001
-    well['l2'] = np.log2(ci)
+    ci_for_log = well['ci'].copy() + 1
+    ci_for_log[ci_for_log < 0.5] = 0.5
+    well['l2'] = np.log2(ci_for_log)
 
     if well.time.min() < 0:
         norm_point = np.where(well.time <= 0)[0][-1]
-        well['nci'] = well['ci'] / well.iloc[norm_point]['ci']
-        well['nl2'] = well['l2'] - well.iloc[norm_point]['l2']
-        well.loc[well.l2<0, 'l2'] = 0
+        norm_value = well.iloc[norm_point]['ci']
+        if norm_value < 0.1: # negative values flip the curve and small values make it grow too fast
+            warnings.warn('Negative or small CI at time zero. Well %s removed.' % well.well.iloc[0])
+            return None
+        well['nci'] = well['ci'] / norm_value
+        nci = well.nci.copy() + 1
+        nci[nci < 0.5] = 0.5
+        well['nl2'] = np.log2(nci)
     else:
         well['nci'] = well['ci']
         well['nl2'] = well['l2']
@@ -242,7 +244,7 @@ def plot(df, x='time', y='nci', color=None):
         ax.legend(by_label.values(), by_label.keys(), title=color)
 
 
-def plot3d(dd, color=None, factor=False, cmap='tab10', hover='well'):
+def plot3d(dd, color=None, factor=False, cmap='tab10', hover='well', publish=False):
     import plotly
     import plotly.plotly as py
     import plotly.graph_objs as go
@@ -256,7 +258,6 @@ def plot3d(dd, color=None, factor=False, cmap='tab10', hover='well'):
     # https://github.com/plotly/plotly.py/issues/952
     traces = [go.Scatter3d(x=[0], y=[0], z=[0],
         marker={'color':'rgb(0, 0, 0)', 'opacity': 1, 'size': 0.1}, showlegend=False)]
-
 
     if factor: #(dd[color].dtype == np.dtype('O')) or
         tab10 = plt.get_cmap(cmap)
@@ -278,41 +279,149 @@ def plot3d(dd, color=None, factor=False, cmap='tab10', hover='well'):
         layout['showlegend'] = False
 
     fig = go.Figure(data=traces, layout=go.Layout(layout))
-    plotly.offline.iplot(fig)
+    if publish:
+        plotly.iplot(fig)
+    else:
+        plotly.offline.iplot(fig)
 
-def pca(dfw, x='nci', n=3, plot=True):
-    to_drop = {'time', 'ci', 'nci', 'l2', 'nl2'}
+def plot3d_tsne(dd, color=None, factor=False, cmap='tab10', hover='well', publish=False):
+    import plotly
+    import plotly.plotly as py
+    import plotly.graph_objs as go
+
+    trace_params = {'mode': 'markers', 'hoverinfo':'name+text'}
+    marker = {'colorscale': 'Jet', 'opacity': 1, 'size': 3}
+    layout = {'height': 600, 'margin': {'b': 0, 'l': 0, 'r': 0, 't': 0}, 'paper_bgcolor': '#f0f0f0', 'width': 800,
+             'scene': {'xaxis':{'title':'tSNE1'}, 'yaxis':{'title':'tSNE2'}, 'zaxis':{'title':'tSNE3'}}}
+
+    # this is a hack to fix the hover texts on the first trace (we make a fake one which is broken)
+    # https://github.com/plotly/plotly.py/issues/952
+    traces = [go.Scatter3d(x=[0], y=[0], z=[0],
+        marker={'color':'rgb(0, 0, 0)', 'opacity': 1, 'size': 0.1}, showlegend=False)]
+
+    if factor: #(dd[color].dtype == np.dtype('O')) or
+        tab10 = plt.get_cmap(cmap)
+        def get_plotly_color(cm, n):
+            return 'rgb' + str(cm(n, bytes=True)[:3])
+        for ii, (name, sg) in enumerate(dd.groupby(color)):
+            marker['color'] = get_plotly_color(tab10, ii)
+            trace_params['marker'] = marker
+            trace_params['name'] = name
+            trace = go.Scatter3d(x=sg.tSNE1, y=sg.tSNE2, z=sg.tSNE3, hovertext=sg[hover], **trace_params)
+            traces.append(trace)
+            layout['showlegend'] = True
+    else:
+        marker['color'] = dd[color].astype('category').cat.codes.values
+        marker['colorbar'] = go.ColorBar(title=color, thickness=10, len=.3, y=.8)
+        trace_params['marker'] = marker
+        trace = go.Scatter3d(x=dd.tSNE1, y=dd.tSNE2, z=dd.tSNE3, hovertext=dd.id, **trace_params)
+        traces.append(trace)
+        layout['showlegend'] = False
+
+    fig = go.Figure(data=traces, layout=go.Layout(layout))
+    if publish:
+        plotly.iplot(fig)
+    else:
+        plotly.offline.iplot(fig)
+
+def pca(dfl, n=3, plot=True, x='nl2'):
+    dfw = prepare_unstack(dfl, x=x).unstack('tp')
+    pca_m = PCA(n_components=n)
+    X_pca = pca_m.fit_transform(dfw.values)
+    columns = ['PC' + str(x) for x in range(1,n+1)]
+    X_pca_df = pd.DataFrame(X_pca, index=dfw.index, columns=columns).reset_index()
+
+    if plot:
+        plot_explained_variance(pca_m)
+    # print('residual = %.3f' % (1-pca_m.explained_variance_ratio_.sum()))
+    return pca_m, X_pca_df
+
+def pca_filter(dfl, n=3, plot=True, x='nl2'):
+    dfl = dfl.sort_values(['well', 'tp']).reset_index(drop=True)
+    dfl = prepare_unstack(dfl, x=x)
+    dfw = dfl.unstack('tp')
+    pca_m = PCA(n_components=n)
+    X_pca = pca_m.fit_transform(dfw.values)
+
+    X_components_df = pd.DataFrame(pca_m.components_.T,
+        index=dfw.columns.droplevel(),
+        columns=pd.MultiIndex.from_product([['w'], range(1,n+1)], names=[None, 'pc'])
+        ).stack().reset_index()
+
+    filtered = pca_m.inverse_transform(X_pca)
+    dfl['filtered'] = pd.DataFrame(filtered, index=dfw.index, columns=dfw.columns).stack('tp')
+    dfl['residual'] = dfl[x] - dfl['filtered']
+
+    if plot:
+        plot_explained_variance(pca_m)
+    print('residual = %.3f' % (1-pca_m.explained_variance_ratio_.sum()))
+    return dfl.reset_index(), X_components_df
+
+def prepare_unstack(dfw, x='nl2'):
+    to_drop = {'time', 'ci', 'nci', 'l2', 'nl2'} & set(dfw.columns)
     to_drop.remove(x)
     dfw = dfw.drop(to_drop, axis=1)
-    ind = set(dfw.columns)
-    ind.discard(x)
-    dfw = dfw.set_index(list(ind))
-    dfw = dfw.unstack('tp')
-    X = dfw.values
+    i_cols = set(dfw.columns)
+    i_cols.discard(x)
+    i_cols.discard('tp')
+    return dfw.set_index(list(i_cols) + ['tp'])
 
-    pca_m = PCA(n_components=n)
-    X_pca = pca_m.fit_transform(X)
-    cc = ['PC' + str(x) for x in range(1,n+1)]
-    X_pca_df = pd.DataFrame(X_pca, index=dfw.index, columns=cc).reset_index()
-
+def plot_explained_variance(pca_m):
     evr = pca_m.explained_variance_ratio_
     residual = 1-evr.sum()
-    if plot:
-        ind = np.arange(n+1, 0, -1)
-        col = np.r_[np.tile('g', n), np.array(['r'])]
-        evr = np.r_[evr, np.array([residual])]
-        fig, ax = plt.subplots(figsize=(4,1))
-        ax.barh(ind, evr, color=col)
-        ax.set_yticks(ind)
-        ax.set_yticklabels(cc + ['residual'])
-        ax.set_xlim(0,1)
-        ax.set_xlabel('explained variance')
-        ax.set_ylabel('components')
+    n = pca_m.n_components
+    ind = np.arange(n+1, 0, -1)
+    col = np.r_[np.tile('g', n), np.array(['r'])]
+    evr = np.r_[evr, np.array([residual])]
+    fig, ax = plt.subplots(figsize=(4,1))
+    ax.barh(ind, evr, color=col)
+    ax.set_yticks(ind)
+    ax.set_yticklabels(['PC' + str(x) for x in range(1, n + 1)] + ['residual'])
+    ax.set_xlim(0,1)
+    ax.set_xlabel('explained variance')
+    ax.set_ylabel('components')
 
-    print('residual = %.3f' % residual)
-    return X_pca_df
+def calculate_z_score(p, components=None):
+    res = np.zeros_like(p.PC1)
+    for pc in p.columns[p.columns.str.contains('PC')][:components]:
+        res += ((p[pc] - p[pc].mean())/ p[pc].std())**2
+    return np.sqrt(res)
+
+def annotate(df):
+    import requests
+    import urllib3
+    def escape(x):
+        if isinstance(x, (tuple, list)):
+            return '[%s]' % (','.join(map(escape, x)))
+        return '"%s"' % x
+    def parse(rec):
+        plate, well, dd = rec
+        dd['plate'] = plate
+        dd['well'] = well
+        return dd
+    df = df.copy()
+    urllib3.disable_warnings()
+    login_url = 'https://dbtest.screenx.cz/accounts/login/'
+    s = requests.Session()
+    s.get(login_url, verify=False)
+    login_data = {
+        'username' : 'kahle',
+        'password' : 'tajne heslo',
+        'csrfmiddlewaretoken' : s.cookies['csrftoken']
+    }
+    r1 = s.post(login_url, login_data, headers={'Referer' : login_url}, verify=False)
+    rows_series = np.array(list('ABCDEFGHIJKLMNOP'))
+    df['well'] = rows_series[df['row']] + (df['col'] + 1).astype(str)
+    df['plate'] = df.cp.apply(lambda cp: 'CP-0%s-00' % cp)
+    ll = []
+    for ii in range(0, df.shape[0], 200):
+        query = df[['plate', 'well']].iloc[ii: ii+200].values.tolist()
+        r2 = s.get('https://dbtest.screenx.cz/api/get_samples?query=%s' % escape(query), verify=False)
+        anot = r2.json()
+        res_df = pd.DataFrame(list(map(parse, anot)))
+        ll.append(res_df)
+    res_df = pd.concat(ll)
+    return pd.merge(res_df, df).drop(['plate', 'well'], axis=1)
 
 if __name__ == '__main__':
-    # scan()
-    load_file('data/170202_dose_response.plt')
-    # load_file('data/2017-11-22_cytostatics/1711171708HT1_A115534.PLT')
+    pass
