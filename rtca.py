@@ -107,7 +107,7 @@ def normalize_well(well, fig, spike_threshold=3):
 
     ci_for_log = well['ci'].copy() + 1
     ci_for_log[ci_for_log < 0.5] = 0.5
-    well['l2'] = np.log2(ci_for_log)
+    well['lci'] = np.log2(ci_for_log)
 
     if well.time.min() < 0:
         norm_point = np.where(well.time <= 0)[0][-1]
@@ -118,10 +118,10 @@ def normalize_well(well, fig, spike_threshold=3):
         well['nci'] = well['ci'] / norm_value
         nci = well.nci.copy() + 1
         nci[nci < 0.5] = 0.5
-        well['nl2'] = np.log2(nci)
+        well['lnci'] = np.log2(nci)
     else:
         well['nci'] = well['ci']
-        well['nl2'] = well['l2']
+        well['lnci'] = well['lci']
     return well
 
 def load_file(filename):
@@ -324,7 +324,7 @@ def plot3d_tsne(dd, color=None, factor=False, cmap='tab10', hover='well', publis
     else:
         plotly.offline.iplot(fig)
 
-def pca(dfl, n=3, plot=True, x='nl2'):
+def pca(dfl, n=3, plot=True, x='lnci'):
     dfw = prepare_unstack(dfl, x=x).unstack('tp')
     pca_m = PCA(n_components=n)
     X_pca = pca_m.fit_transform(dfw.values)
@@ -336,7 +336,7 @@ def pca(dfl, n=3, plot=True, x='nl2'):
     # print('residual = %.3f' % (1-pca_m.explained_variance_ratio_.sum()))
     return pca_m, X_pca_df
 
-def pca_filter(dfl, n=3, plot=True, x='nl2'):
+def pca_filter(dfl, n=3, plot=True, x='lnci'):
     dfl = dfl.sort_values(['well', 'tp']).reset_index(drop=True)
     dfl = prepare_unstack(dfl, x=x)
     dfw = dfl.unstack('tp')
@@ -357,8 +357,8 @@ def pca_filter(dfl, n=3, plot=True, x='nl2'):
     print('residual = %.3f' % (1-pca_m.explained_variance_ratio_.sum()))
     return dfl.reset_index(), X_components_df
 
-def prepare_unstack(dfw, x='nl2'):
-    to_drop = {'time', 'ci', 'nci', 'l2', 'nl2'} & set(dfw.columns)
+def prepare_unstack(dfw, x='lnci'):
+    to_drop = {'time', 'ci', 'nci', 'lci', 'lnci'} & set(dfw.columns)
     to_drop.remove(x)
     dfw = dfw.drop(to_drop, axis=1)
     i_cols = set(dfw.columns)
