@@ -112,11 +112,11 @@ def normalize_well(well, fig, spike_threshold=3):
     if well.time.min() < 0:
         norm_point = np.where(well.time <= 0)[0][-1]
         norm_value = well.iloc[norm_point]['ci']
-        if norm_value < 0.1: # negative values flip the curve and small values make it grow too fast
+        if norm_value < 0.1: # negative values here flip the curve and small values make it grow too fast
             warnings.warn('Negative or small CI at time zero. Well %s removed.' % well.well.iloc[0])
             return None
         well['nci'] = well['ci'] / norm_value
-        nci = well.nci.copy() + 1
+        nci = well['nci'].copy() + 1
         nci[nci < 0.5] = 0.5
         well['lnci'] = np.log2(nci)
     else:
@@ -259,45 +259,10 @@ def plot3d(dd, color=None, factor=False, cmap='tab10', hover='well', publish=Fal
     traces = [go.Scatter3d(x=[0], y=[0], z=[0],
         marker={'color':'rgb(0, 0, 0)', 'opacity': 1, 'size': 0.1}, showlegend=False)]
 
-    if factor: #(dd[color].dtype == np.dtype('O')) or
-        tab10 = plt.get_cmap(cmap)
-        def get_plotly_color(cm, n):
-            return 'rgb' + str(cm(n, bytes=True)[:3])
-        for ii, (name, sg) in enumerate(dd.groupby(color)):
-            marker['color'] = get_plotly_color(tab10, ii)
-            trace_params['marker'] = marker
-            trace_params['name'] = name
-            trace = go.Scatter3d(x=sg.PC1, y=sg.PC2, z=sg.PC3, hovertext=sg[hover], **trace_params)
-            traces.append(trace)
-            layout['showlegend'] = True
-    else:
-        marker['color'] = dd[color].astype('category').cat.codes.values
-        marker['colorbar'] = go.ColorBar(title=color, thickness=10, len=.3, y=.8)
-        trace_params['marker'] = marker
-        trace = go.Scatter3d(x=dd.PC1, y=dd.PC2, z=dd.PC3, hovertext=dd.id, **trace_params)
-        traces.append(trace)
-        layout['showlegend'] = False
-
-    fig = go.Figure(data=traces, layout=go.Layout(layout))
-    if publish:
-        plotly.iplot(fig)
-    else:
-        plotly.offline.iplot(fig)
-
-def plot3d_tsne(dd, color=None, factor=False, cmap='tab10', hover='well', publish=False):
-    import plotly
-    import plotly.plotly as py
-    import plotly.graph_objs as go
-
-    trace_params = {'mode': 'markers', 'hoverinfo':'name+text'}
-    marker = {'colorscale': 'Jet', 'opacity': 1, 'size': 3}
-    layout = {'height': 600, 'margin': {'b': 0, 'l': 0, 'r': 0, 't': 0}, 'paper_bgcolor': '#f0f0f0', 'width': 800,
-             'scene': {'xaxis':{'title':'tSNE1'}, 'yaxis':{'title':'tSNE2'}, 'zaxis':{'title':'tSNE3'}}}
-
-    # this is a hack to fix the hover texts on the first trace (we make a fake one which is broken)
-    # https://github.com/plotly/plotly.py/issues/952
-    traces = [go.Scatter3d(x=[0], y=[0], z=[0],
-        marker={'color':'rgb(0, 0, 0)', 'opacity': 1, 'size': 0.1}, showlegend=False)]
+    if 'PC1' in dd.columns:
+        xc, yc, zc = 'PC1', 'PC2', 'PC3'
+    elif 'tSNE1' in dd.columns:
+        xc, yc, zc = 'tSNE1', 'tSNE2', 'tSNE3'
 
     if factor: #(dd[color].dtype == np.dtype('O')) or
         tab10 = plt.get_cmap(cmap)
@@ -307,14 +272,15 @@ def plot3d_tsne(dd, color=None, factor=False, cmap='tab10', hover='well', publis
             marker['color'] = get_plotly_color(tab10, ii)
             trace_params['marker'] = marker
             trace_params['name'] = name
-            trace = go.Scatter3d(x=sg.tSNE1, y=sg.tSNE2, z=sg.tSNE3, hovertext=sg[hover], **trace_params)
+            trace = go.Scatter3d(x=sg[xc], y=sg[yc], z=sg[zc], hovertext=sg[hover], **trace_params)
             traces.append(trace)
             layout['showlegend'] = True
     else:
-        marker['color'] = dd[color].astype('category').cat.codes.values
-        marker['colorbar'] = go.ColorBar(title=color, thickness=10, len=.3, y=.8)
+        marker['color'] = dd[color].values#.astype('category').cat.codes.values
+        marker['colorbar'] = dict(title=color, thickness=10, len=.3, y=.8)
+        marker['showscale'] = True
         trace_params['marker'] = marker
-        trace = go.Scatter3d(x=dd.tSNE1, y=dd.tSNE2, z=dd.tSNE3, hovertext=dd.id, **trace_params)
+        trace = go.Scatter3d(x=dd[xc], y=dd[yc], z=dd[zc], hovertext=dd.id, **trace_params)
         traces.append(trace)
         layout['showlegend'] = False
 
