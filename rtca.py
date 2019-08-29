@@ -19,26 +19,20 @@ def load_dir(directory, **kwargs):
     return data
 
 # barcode_re='_(A\\d{6})\\.PLT$'
-def load_files(file_list, barcode_re=None, **kwargs):
-    if barcode_re is not None:
-        barcode_re = re.compile(barcode_re)
-    rows_series = np.array(list('ABCDEFGHIJKLMNOP'))
+def load_files(file_list, barcode_re, **kwargs):
+    barcode_re = re.compile(barcode_re)
     plates = {}
     ll = []
     for filename in file_list:
         # print(filename)
         org = load_file(filename)
-        if barcode_re is not None:
-            match = barcode_re.search(filename)
-            if match is not None:
-                barcode = match.group(1)
-            else:
-                raise Exception(
-                    'barcdode_re="%s" not found in file name: "%s"' % (barcode_re.pattern, filename))
+        match = barcode_re.search(filename)
+        if match is not None:
+            barcode = int(match.group(1))
         else:
-            barcode = np.nan
-
-        org['barcode'] = barcode
+            raise Exception(
+                'barcdode_re="%s" not found in file name: "%s"' % (barcode_re.pattern, filename))
+        org['ap'] = barcode
         if not barcode in plates:
             plates[barcode] = [0, 0]
         org['otp'] = org['tp']
@@ -46,25 +40,18 @@ def load_files(file_list, barcode_re=None, **kwargs):
         plates[barcode][1] = org['tp'].max()
         plates[barcode][0] += 1
         org['file'] = plates[barcode][0]
-        org['well'] = rows_series[org['row']] + (org['col'] + 1).astype(str) #.str.zfill(2)
-        if barcode is not np.nan:
-            org['well'] = barcode + '_' + org['well']
         ll.append(org)
-    return pd.concat(ll, ignore_index=True)
+    return pd.concat(ll, ignore_index=True).reset_index(drop=True)
 
 def normalize(df, layout=None, **kwargs):
-    # if barcode is not np.nan:
-    #     df = df.groupby('barcode').apply(lambda x: normalize_plate(x, **kwargs))
-    # else:
-    #     df = normalize_plate(df, **kwargs)
-    df = df.groupby('barcode').apply(lambda x: normalize_plate(x, **kwargs))
+    df = df.groupby('ap').apply(lambda x: normalize_plate(x, **kwargs))
 
     fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(12,4))
-    df = df.groupby('well').apply(lambda x: normalize_well(x, fig))
+    df = df.groupby(['ap', 'well']).apply(lambda x: normalize_well(x, fig))
     df = df.drop(kwargs.get('drop', ['dt', 'file', 'org', 'otp']), axis=1)
     if layout is not None:
         df = pd.merge(df, layout)
-    df = df.sort_values(['tp', 'row', 'col'])
+    # df = df.sort_values(['tp', 'well'])
     df = df.reset_index(drop=True)
     return df
 
@@ -143,30 +130,19 @@ def load_file(filename):
     ttimes = ttimes[['TimePoint', 'TestTime']]
     ttimes.columns = ['tp', 'dt']
     ttimes['dt'] = pd.to_datetime(ttimes['dt'])
-    ttimes = ttimes.set_index('tp')
     org = mdb.read_table(filename, 'Org10K').drop('TestOrder', axis=1)
     assert org.shape[0] > 0, '%s contains no data!' % filename
-    org = org.rename({'TimePoint':'tp'}, axis=1).set_index(['tp', 'Row'])
+    org['Row'] = org['Row'].map(ord) - 65
+    org = org.rename({'TimePoint':'tp', 'Row':'row'}, axis=1).set_index(['tp', 'row']).sort_index()
     n_cols = org.shape[1]
-    org.columns = pd.MultiIndex.from_product([['org'], range(n_cols)], names=['value', 'col'])
-    org = org.unstack('tp').sort_index()
-    org = org.reset_index(drop=True)
-    org.index.name = 'row'
-    org = org.stack(['tp', 'col'])
-    org.org = pd.to_numeric(org.org)
-    org = ttimes.join(org)
-    org = org.reset_index()
-    org = org[['tp', 'row', 'col', 'dt', 'org']]
-    org = org.sort_values(by=['tp', 'row', 'col'])
-    org = org.reset_index(drop=True)
+    org.columns = pd.MultiIndex.from_product([['org'], range(n_cols)], names=[None, 'col'])
+    org = org.stack('col').reset_index()
+    org['org'] = org['org'].astype(float)
+    org['well'] = org['row'] * (org['col'].max() + 1) + org['col']
+    org.drop(['row', 'col'], axis=1, inplace=True)
+    org = org.merge(ttimes)
+    org = org[['tp', 'well', 'dt', 'org']]
     return org
-
-# def scan():
-#     for dirpath, dirnames, files in os.walk('data'):
-#         for name in files:
-#             if name.lower().endswith('.plt'):
-#                 filename = os.path.join(dirpath, name)
-#                 load_file(filename)
 
 def plate_96():
     ll = pd.DataFrame(dict(
@@ -187,9 +163,22 @@ def plate_384():
         ll.edge[ll.col < m] += 1
         ll.edge[ll.row > ll.row.max() - m] += 1
         ll.edge[ll.col > ll.col.max() - m] += 1
+    # ll['spiral'] = spiral(16, 24).flatten()
     return ll
 
-def plot_overview(df, x='time', y='nci', group='barcode'):
+def spiral(m, n):
+    M = np.zeros([m, n], dtype=int)
+    i, j = 0, 0 # location of "turtle"
+    di, dj = 0, 1 # direction of movement
+    h = (np.min([m,n]))/2
+    for ii in range(m * n):
+        M[i, j] = ii
+        if (i < h and (i == j+1 or i+1 == n-j)) or (i >= m-h and (m-i == n-j or m-i == j+1)):
+            di, dj = dj, -di # turn clockwise
+        i, j = i + di, j + dj
+    return M
+
+def plot_overview(df, x='time', y='nci', group='ap'):
     fig, ax = plt.subplots(1, 1, figsize=(24, 16))
     ax.set_prop_cycle(mpl.rcParams['axes.prop_cycle'][:3])
     r_max, c_max = df.row.max(), df.col.max()
@@ -244,7 +233,7 @@ def plot(df, x='time', y='nci', color=None):
         ax.legend(by_label.values(), by_label.keys(), title=color)
 
 
-def plot3d(dd, color=None, factor=False, cmap='tab10', hover='well', publish=False):
+def plot3d(dd, color=None, factor=False, cmap='tab10', hover='well', publish=False, projection='PCA'):
     import plotly
     import plotly.plotly as py
     import plotly.graph_objs as go
@@ -259,9 +248,9 @@ def plot3d(dd, color=None, factor=False, cmap='tab10', hover='well', publish=Fal
     traces = [go.Scatter3d(x=[0], y=[0], z=[0],
         marker={'color':'rgb(0, 0, 0)', 'opacity': 1, 'size': 0.1}, showlegend=False)]
 
-    if 'PC1' in dd.columns:
+    if projection == 'PCA':
         xc, yc, zc = 'PC1', 'PC2', 'PC3'
-    elif 'tSNE1' in dd.columns:
+    elif projection == 'tSNE':
         xc, yc, zc = 'tSNE1', 'tSNE2', 'tSNE3'
 
     if factor: #(dd[color].dtype == np.dtype('O')) or
@@ -280,7 +269,7 @@ def plot3d(dd, color=None, factor=False, cmap='tab10', hover='well', publish=Fal
         marker['colorbar'] = dict(title=color, thickness=10, len=.3, y=.8)
         marker['showscale'] = True
         trace_params['marker'] = marker
-        trace = go.Scatter3d(x=dd[xc], y=dd[yc], z=dd[zc], hovertext=dd.id, **trace_params)
+        trace = go.Scatter3d(x=dd[xc], y=dd[yc], z=dd[zc], hovertext=dd.compound, **trace_params)
         traces.append(trace)
         layout['showlegend'] = False
 
@@ -290,8 +279,8 @@ def plot3d(dd, color=None, factor=False, cmap='tab10', hover='well', publish=Fal
     else:
         plotly.offline.iplot(fig)
 
-def pca(dfl, n=3, plot=True, x='lnci'):
-    dfw = prepare_unstack(dfl, x=x).unstack('tp')
+def pca(dfl, n=3, plot=True, x='lnci', t='tp'):
+    dfw = prepare_unstack(dfl, x=x, t=t).unstack(t)
     pca_m = PCA(n_components=n)
     X_pca = pca_m.fit_transform(dfw.values)
     columns = ['PC' + str(x) for x in range(1,n+1)]
@@ -302,10 +291,44 @@ def pca(dfl, n=3, plot=True, x='lnci'):
     # print('residual = %.3f' % (1-pca_m.explained_variance_ratio_.sum()))
     return pca_m, X_pca_df
 
-def pca_filter(dfl, n=3, plot=True, x='lnci'):
-    dfl = dfl.sort_values(['well', 'tp']).reset_index(drop=True)
-    dfl = prepare_unstack(dfl, x=x)
-    dfw = dfl.unstack('tp')
+def pca_fit(dfl, n=3, plot=True, x='lnci', t='tp'):
+    dfw = prepare_unstack(dfl, x=x, t=t).unstack(t)
+    pca_m = PCA(n_components=n)
+    X_pca = pca_m.fit_transform(dfw.values)
+
+    # columns = ['PC' + str(x) for x in range(1,n+1)]
+    # X_pca_df = pd.DataFrame(X_pca, index=dfw.index, columns=columns).reset_index()
+
+    if plot:
+        plot_explained_variance(pca_m)
+    # print('residual = %.3f' % (1-pca_m.explained_variance_ratio_.sum()))
+    return pca_m
+
+def pca_components(model, time_index=None):
+    shape = model.components_.shape
+    if time_index is None:
+        time_index = pd.Index(range(1, shape[1]+1), name='tp')
+    else:
+        time_index = pd.Index(time_index, name='time')
+    return pd.DataFrame(model.components_.T,
+        index=time_index,
+        columns=pd.MultiIndex.from_product([['w'], range(1,shape[0]+1)], names=[None, 'PC'])
+        ).stack().reset_index()
+
+def pca_reconstruct(model, df_pca, time_index=None):
+    shape = model.components_.shape
+    if time_index is None:
+        time_index = range(1, shape[1]+1)
+    time_index = pd.MultiIndex.from_product([['lnci'], time_index], names=[None, 'time'])
+    df_pca.set_index(list(df_pca.columns[~df_pca.columns.str.contains('PC')]), inplace=True)
+    filtered = model.inverse_transform(df_pca.values)
+    df = pd.DataFrame(filtered, index=df_pca.index, columns=time_index)
+    return df.stack().reset_index()
+
+def pca_filter(dfl, n=3, plot=True, x='lnci', t='tp'):
+    dfl = dfl.sort_values(['well', t]).reset_index(drop=True)
+    dfl = prepare_unstack(dfl, x=x, t=t)
+    dfw = dfl.unstack(t)
     pca_m = PCA(n_components=n)
     X_pca = pca_m.fit_transform(dfw.values)
 
@@ -315,22 +338,22 @@ def pca_filter(dfl, n=3, plot=True, x='lnci'):
         ).stack().reset_index()
 
     filtered = pca_m.inverse_transform(X_pca)
-    dfl['filtered'] = pd.DataFrame(filtered, index=dfw.index, columns=dfw.columns).stack('tp')
+    dfl['filtered'] = pd.DataFrame(filtered, index=dfw.index, columns=dfw.columns).stack(t)
     dfl['residual'] = dfl[x] - dfl['filtered']
 
     if plot:
         plot_explained_variance(pca_m)
-    print('residual = %.3f' % (1-pca_m.explained_variance_ratio_.sum()))
+    # print('residual = %.3f' % (1-pca_m.explained_variance_ratio_.sum()))
     return dfl.reset_index(), X_components_df
 
-def prepare_unstack(dfw, x='lnci'):
+def prepare_unstack(dfw, x='lnci', t='tp'):
     to_drop = {'time', 'ci', 'nci', 'lci', 'lnci'} & set(dfw.columns)
     to_drop.remove(x)
+    if t == 'time':
+        to_drop.remove(t)
     dfw = dfw.drop(to_drop, axis=1)
-    i_cols = set(dfw.columns)
-    i_cols.discard(x)
-    i_cols.discard('tp')
-    return dfw.set_index(list(i_cols) + ['tp'])
+    dfw.set_index([cc for cc in dfw.columns if cc != x], inplace=True)
+    return dfw
 
 def plot_explained_variance(pca_m):
     evr = pca_m.explained_variance_ratio_
@@ -347,47 +370,62 @@ def plot_explained_variance(pca_m):
     ax.set_xlabel('explained variance')
     ax.set_ylabel('components')
 
+def add_tsne(df, dims=2, perplexity=30):
+    from sklearn.manifold import TSNE
+    X = df.loc[:, df.columns.str.contains('PC')].values
+    X_embedded = TSNE(n_components=dims, perplexity=perplexity).fit_transform(X)
+    for n in range(dims):
+        label = 'tSNE%s' % (n+1)
+        df[label] = X_embedded[:, n]
+    return df
+
 def calculate_z_score(p, components=None):
     res = np.zeros_like(p.PC1)
     for pc in p.columns[p.columns.str.contains('PC')][:components]:
         res += ((p[pc] - p[pc].mean())/ p[pc].std())**2
     return np.sqrt(res)
 
-def annotate(df):
+def annotate(df, verbose=False):
     import requests
     import urllib3
-    def escape(x):
-        if isinstance(x, (tuple, list)):
-            return '[%s]' % (','.join(map(escape, x)))
-        return '"%s"' % x
-    def parse(rec):
-        plate, well, dd = rec
-        dd['plate'] = plate
-        dd['well'] = well
-        return dd
-    df = df.copy()
+    import json
+    import screenx_credentials
     urllib3.disable_warnings()
-    login_url = 'https://dbtest.screenx.cz/accounts/login/'
+    login_url = 'https://db.screenx.cz/accounts/login/'
     s = requests.Session()
     s.get(login_url, verify=False)
     login_data = {
-        'username' : 'kahle',
-        'password' : 'tajne heslo',
+        'username' : screenx_credentials.username,
+        'password' : screenx_credentials.password,
         'csrfmiddlewaretoken' : s.cookies['csrftoken']
     }
     r1 = s.post(login_url, login_data, headers={'Referer' : login_url}, verify=False)
-    rows_series = np.array(list('ABCDEFGHIJKLMNOP'))
-    df['well'] = rows_series[df['row']] + (df['col'] + 1).astype(str)
-    df['plate'] = df.cp.apply(lambda cp: 'CP-0%s-00' % cp)
+
+    df = df.copy()
+    if 'library' in df.columns and 'compound' in df.columns:
+        df['sourcename'] = df['library']
+        df['samplename'] = df['compound']
+        dq = df[['sourcename', 'samplename']].copy()
+    else:
+        if 'cp' in df.columns:
+            df['plate'] = df['cp'].apply(lambda cp: 'CP-0%s-00' % cp)
+        if 'well' in df.columns:
+            df['well_an'] = np.array(list('ABCDEFGHIJKLMNOP'))[df['well']//24] + (df['well']%24 + 1).astype(str)
+        dq = df[['plate', 'well_an']].rename({'well_an':'well'}, axis=1)
+    dq = dq.drop_duplicates()
     ll = []
-    for ii in range(0, df.shape[0], 200):
-        query = df[['plate', 'well']].iloc[ii: ii+200].values.tolist()
-        r2 = s.get('https://dbtest.screenx.cz/api/get_samples?query=%s' % escape(query), verify=False)
-        anot = r2.json()
-        res_df = pd.DataFrame(list(map(parse, anot)))
-        ll.append(res_df)
-    res_df = pd.concat(ll)
-    return pd.merge(res_df, df).drop(['plate', 'well'], axis=1)
+    for ii in range(0, dq.shape[0], 50):
+        query = dq.iloc[ii: ii+50].to_dict('records')
+        query = json.dumps(query)
+        if verbose:
+            print(query)
+        r2 = s.get('https://db.screenx.cz/api/get_samples?query=%s' % query, verify=False)
+        if verbose:
+            print(r2.text)
+        ll.append(pd.DataFrame(r2.json()))
+    res_df = pd.concat(ll).rename({'well':'well_an'}, axis=1)
+    res_df = df.merge(res_df, how='left').drop(['plate', 'well_an', 'sourcename', 'samplename'], axis=1, errors='ignore')
+    return res_df
 
 if __name__ == '__main__':
     pass
