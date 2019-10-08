@@ -8,6 +8,8 @@ import matplotlib.pyplot as plt
 import matplotlib as mpl
 from sklearn.decomposition import PCA
 import warnings
+from math import sqrt
+from functools import partial
 # from IPython.core.debugger import set_trace
 
 def load_dir(directory, **kwargs):
@@ -402,16 +404,39 @@ def annotate(df, verbose=False):
     r1 = s.post(login_url, login_data, headers={'Referer' : login_url}, verify=False)
 
     df = df.copy()
-    if 'library' in df.columns and 'compound' in df.columns:
-        df['sourcename'] = df['library']
-        df['samplename'] = df['compound']
+    cols = df.columns
+    to_drop = []
+
+    if ('library' in cols or 'sourcename' in cols) and ('compound' in cols or 'samplename' in cols):
+        if not 'sourcename' in cols:
+            df['sourcename'] = df['library']
+            to_drop.append('sourcename')
+        if not 'samplename' in cols:
+            df['samplename'] = df['compound']
+            to_drop.append('samplename')
         dq = df[['sourcename', 'samplename']].copy()
-    else:
-        if 'cp' in df.columns:
+    elif ('cp' in cols or 'plate' in cols or 's_plate' in cols) and ('well' in cols or 'well_an' in cols or 's_plate' in cols):
+        if 'plate' in cols:
+            pass
+        elif 'cp' in cols:
             df['plate'] = df['cp'].apply(lambda cp: 'CP-0%s-00' % cp)
-        if 'well' in df.columns:
+            to_drop.append('plate')
+        elif 's_plate' in cols:
+            df['plate'] = df['s_plate']
+            to_drop.append('plate')
+
+        if 'well_an' in cols:
+            pass
+        elif 'well_an' in cols:
             df['well_an'] = np.array(list('ABCDEFGHIJKLMNOP'))[df['well']//24] + (df['well']%24 + 1).astype(str)
+            to_drop.append('well_an')
+        elif 's_well' in cols:
+            df['well_an'] = df['s_well']
+            to_drop.append('well_an')
         dq = df[['plate', 'well_an']].rename({'well_an':'well'}, axis=1)
+    else:
+        raise ValueError('DataFrame does not contain necessary columns.')
+
     dq = dq.drop_duplicates()
     ll = []
     for ii in range(0, dq.shape[0], 50):
@@ -424,8 +449,9 @@ def annotate(df, verbose=False):
             print(r2.text)
         ll.append(pd.DataFrame(r2.json()))
     res_df = pd.concat(ll).rename({'well':'well_an'}, axis=1)
-    res_df = df.merge(res_df, how='left').drop(['plate', 'well_an', 'sourcename', 'samplename'], axis=1, errors='ignore')
+    res_df = df.merge(res_df, how='left').drop(to_drop, axis=1) # , errors='ignore'
     return res_df
+
 
 if __name__ == '__main__':
     pass
