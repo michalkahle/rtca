@@ -11,6 +11,7 @@ import warnings
 from math import sqrt
 from functools import partial
 # from IPython.core.debugger import set_trace
+import echo
 
 def load_dir(directory, **kwargs):
     files = [os.path.join(directory, f) for f in sorted(os.listdir(directory)) if f.lower().endswith('.plt')]
@@ -20,20 +21,20 @@ def load_dir(directory, **kwargs):
     data = normalize(data, **kwargs)
     return data
 
-# barcode_re='_(A\\d{6})\\.PLT$'
-def load_files(file_list, barcode_re, **kwargs):
-    barcode_re = re.compile(barcode_re)
+def load_files(file_list, barcode_re='_A(\\d{6})\\.PLT$', **kwargs):
     plates = {}
     ll = []
     for filename in file_list:
-        # print(filename)
         org = load_file(filename)
-        match = barcode_re.search(filename)
-        if match is not None:
-            barcode = int(match.group(1))
+        if barcode_re is None:
+            barcode = 0
         else:
-            raise Exception(
-                'barcdode_re="%s" not found in file name: "%s"' % (barcode_re.pattern, filename))
+            match = re.search(barcode_re, filename)
+            if match is not None:
+                barcode = int(match.group(1))
+            else:
+                raise Exception(
+                    'barcdode_re="%s" not found in file name: "%s"' % (barcode_re, filename))
         org['ap'] = barcode
         if not barcode in plates:
             plates[barcode] = [0, 0]
@@ -49,12 +50,11 @@ def normalize(df, layout=None, **kwargs):
     df = df.groupby('ap').apply(lambda x: normalize_plate(x, **kwargs))
 
     fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(12,4))
-    df = df.groupby(['ap', 'well']).apply(lambda x: normalize_well(x, fig))
-    df = df.drop(kwargs.get('drop', ['dt', 'file', 'org', 'otp']), axis=1)
+    df = df.groupby(['ap', 'welln']).apply(lambda x: normalize_well(x, fig))
+    df = df.drop(kwargs.get('drop', ['dt', 'org', 'otp']), axis=1) # 'file'
+    df = df.reset_index(drop=True)
     if layout is not None:
         df = pd.merge(df, layout)
-    # df = df.sort_values(['tp', 'well'])
-    df = df.reset_index(drop=True)
     return df
 
 # zerotime_file=2, zerotime_point=4, zerotime_offset=120
@@ -67,42 +67,44 @@ def normalize_plate(plate, zerotime_file=1, zerotime_point=1, zerotime_offset=0,
 
 def normalize_well(well, fig, spike_threshold=3):
     ax0, ax1 = fig.get_axes(); ax0.set_title('outliers'); ax1.set_title('spikes')
-    well['ci'] = (well.org - well.org.loc[well.tp.idxmin()]) / 15
-    outliers = well.loc[abs(well.ci) > 100].copy()
+    well['ci'] = (well['org'] - well['org'].loc[well['tp'].idxmin()]) / 15
+    outliers = well.loc[abs(well['ci']) > 100].copy()
     if not outliers.empty:
-        outliers['blocks'] = ((outliers.tp - outliers.tp.shift(1)) > 1).cumsum()
-        ax0.plot(well.tp, well.ci, label=outliers.well.iloc[0])
-        ax0.scatter(outliers.tp, outliers.ci, facecolors='none', edgecolors='r', label=None)
+        outliers['blocks'] = ((outliers['tp'] - outliers['tp'].shift(1)) > 1).cumsum()
+        label = '%s-%s' % (outliers['ap'].iloc[0], echo.welln2well_384(outliers['welln'].iloc[0]))
+        ax0.plot(well['tp'], well['ci'], label=label)
+        ax0.scatter(outliers['tp'], outliers['ci'], facecolors='none', edgecolors='r', label=None)
         ax0.legend(); ax0.set_xlabel('tp'); ax0.set_ylabel('ci')
         def fix_outlier(ol):
             try:
-                fix = (well[well.tp == ol.tp.min()-1].ci.iloc[0] + well[well.tp == ol.tp.max()+1].ci.iloc[0]) /2
+                fix = (well[well['tp'] == ol['tp'].min()-1]['ci'].iloc[0] + well[well['tp'] == ol['tp'].max()+1]['ci'].iloc[0]) /2
             except IndexError:
-                if well.tp.min() < ol.tp.min():
-                    fix = well[well.tp == ol.tp.min()-1].ci.iloc[0]
+                if well['tp'].min() < ol['tp'].min():
+                    fix = well[well['tp'] == ol['tp'].min()-1]['ci'].iloc[0]
                 else:
-                    fix = well[well.tp == ol.tp.max()+1].ci.iloc[0]
+                    fix = well[well['tp'] == ol['tp'].max()+1]['ci'].iloc[0]
             well.loc[ol.index, 'ci'] = fix
         outliers.groupby('blocks').filter(fix_outlier)
-    s = well.ci
+    s = well['ci']
     spikes = well[(s - s.shift(1) > spike_threshold) & (s - s.shift(-1) > spike_threshold)]
     if not spikes.empty:
-        ax1.plot(well.tp, well.ci, label=spikes.well.iloc[0])
-        ax1.scatter(spikes.tp, spikes.ci, facecolors='none', edgecolors='r', label=None)
+        label = '%s-%s' % (spikes['ap'].iloc[0], echo.welln2well_384(spikes['welln'].iloc[0]))
+        ax1.plot(well['tp'], well['ci'], label=label)
+        ax1.scatter(spikes['tp'], spikes['ci'], facecolors='none', edgecolors='r', label=None)
         ax1.legend(); ax1.set_xlabel('tp'); ax1.set_ylabel('ci')
         for ii, ol in spikes.iterrows():
-            fix = (well[well.tp == ol.tp-1].ci.iloc[0] + well[well.tp == ol.tp+1].ci.iloc[0]) /2
+            fix = (well[well['tp'] == ol['tp']-1]['ci'].iloc[0] + well[well['tp'] == ol['tp']+1]['ci'].iloc[0]) /2
             well.loc[ii, 'ci'] = fix
 
     ci_for_log = well['ci'].copy() + 1
     ci_for_log[ci_for_log < 0.5] = 0.5
     well['lci'] = np.log2(ci_for_log)
 
-    if well.time.min() < 0:
-        norm_point = np.where(well.time <= 0)[0][-1]
+    if well['time'].min() < 0:
+        norm_point = np.where(well['time'] <= 0)[0][-1]
         norm_value = well.iloc[norm_point]['ci']
         if norm_value < 0.1: # negative values here flip the curve and small values make it grow too fast
-            warnings.warn('Negative or small CI at time zero. Well %s removed.' % well.well.iloc[0])
+            warnings.warn('Negative or small CI at time zero. Well %s removed.' % well['welln'].iloc[0])
             return None
         well['nci'] = well['ci'] / norm_value
         nci = well['nci'].copy() + 1
@@ -140,17 +142,17 @@ def load_file(filename):
     org.columns = pd.MultiIndex.from_product([['org'], range(n_cols)], names=[None, 'col'])
     org = org.stack('col').reset_index()
     org['org'] = org['org'].astype(float)
-    org['well'] = org['row'] * (org['col'].max() + 1) + org['col']
+    org['welln'] = org['row'] * (org['col'].max() + 1) + org['col']
     org.drop(['row', 'col'], axis=1, inplace=True)
     org = org.merge(ttimes)
-    org = org[['tp', 'well', 'dt', 'org']]
+    org = org[['tp', 'welln', 'dt', 'org']]
     return org
 
 def plate_96():
     ll = pd.DataFrame(dict(
         row = np.repeat(np.arange(8),12),
         col = np.tile(np.arange(12),8),
-        well = np.arange(96),
+        welln = np.arange(96),
         edge=0))
     ll.edge[ll.row < 1] += 1
     ll.edge[ll.col < 1] += 1
@@ -180,10 +182,15 @@ def spiral(m, n):
         i, j = i + di, j + dj
     return M
 
-def plot_overview(df, x='time', y='nci', group='ap'):
+_rows = np.array([chr(x) for x in range(65, 91)] + ['A' + chr(x) for x in range(65, 71)])
+
+def plot_overview(df, x='time', y='nci', group='ap', format=384):
     fig, ax = plt.subplots(1, 1, figsize=(24, 16))
     ax.set_prop_cycle(mpl.rcParams['axes.prop_cycle'][:3])
-    r_max, c_max = df.row.max(), df.col.max()
+    n_cols = int(sqrt(format/2*3))
+    r_max = (df['welln'] // n_cols).max() + 1
+    c_max = (df['welln'] % n_cols).max() + 1
+
     x_min, y_min, x_max, y_max = df[x].min(), df[y].min(), df[x].max(), df[y].max()
     x_offset = (x_max - x_min)
     y_offset = (y_max - y_min)
@@ -192,23 +199,24 @@ def plot_overview(df, x='time', y='nci', group='ap'):
     plt.setp(ax, 'frame_on', False)
     ax.set_xticks([])
     ax.set_yticks([])
-    rows, cols, grs = df.row.unique(), df.col.unique(), df[group].unique()
+
     bcg = []
-    for row in rows:
-        rr = df[df.row==row]
+    grs = df[group].unique()
+    for welln in range(format):
+        well = df[df['welln']==welln]
+        row = welln // n_cols
+        col = welln % n_cols
         y_pos = ylim - (row + 2) * y_offset * 1.1
         # row label
-        ax.text(0.75*x_offset, y_pos+.5*y_offset, row, size=20, ha='right', va='center')
-        for col in cols:
-            cc = rr[rr.col==col]
-            x_pos = (col + 1) * x_offset * 1.1
-            bcg.append(mpl.patches.Rectangle((x_pos, y_pos), x_offset, y_offset))
-            # col label
-            if row == 0:
-                ax.text(x_pos+0.5*x_offset, y_pos+1.25*y_offset, col, size=20, ha='center')
-            for gr in grs:
-                sf = cc[cc[group]==gr]
-                ax.plot(sf[x] + x_pos - x_min, sf[y] + y_pos - y_min, '-')
+        ax.text(0.75*x_offset, y_pos+.5*y_offset, _rows[row], size=20, ha='right', va='center')
+        x_pos = (col + 1) * x_offset * 1.1
+        bcg.append(mpl.patches.Rectangle((x_pos, y_pos), x_offset, y_offset))
+        # col label
+        if row == 0:
+            ax.text(x_pos+0.5*x_offset, y_pos+1.25*y_offset, col + 1, size=20, ha='center')
+        for gr in grs:
+            sf = well[well[group]==gr]
+            ax.plot(sf[x] + x_pos - x_min, sf[y] + y_pos - y_min, '-')
     pc = mpl.collections.PatchCollection(bcg, facecolor='#f0f0f0')
     ax.add_collection(pc)
 
@@ -218,7 +226,7 @@ def plot(df, x='time', y='nci', color=None):
     # df = df.sort_values(x)
 
     if color is None:
-        for well, group in df.groupby('well'):
+        for well, group in df.groupby('welln'):
             ax.plot(group[x], group[y], color='k')
         handles, labels = ax.get_legend_handles_labels()
         by_label = OrderedDict(zip(labels, handles))
@@ -228,14 +236,14 @@ def plot(df, x='time', y='nci', color=None):
         # cmap = plt.get_cmap('viridis')
         color_map = dict(zip(groups, cmap((groups - groups.min()) / (groups.max()-groups.min()))))
 
-        for (cc, well), group in df.groupby([color, 'well']):
+        for (cc, well), group in df.groupby([color, 'welln']):
             ax.plot(group[x], group[y], color=color_map[cc]*.75, label=cc)
         handles, labels = ax.get_legend_handles_labels()
         by_label = OrderedDict(zip(labels, handles))
         ax.legend(by_label.values(), by_label.keys(), title=color)
 
 
-def plot3d(dd, color=None, factor=False, cmap='tab10', hover='well', publish=False, projection='PCA'):
+def plot3d(dd, color=None, factor=False, cmap='tab10', hover='welln', publish=False, projection='PCA'):
     import plotly
     import plotly.plotly as py
     import plotly.graph_objs as go
@@ -328,7 +336,7 @@ def pca_reconstruct(model, df_pca, time_index=None):
     return df.stack().reset_index()
 
 def pca_filter(dfl, n=3, plot=True, x='lnci', t='tp'):
-    dfl = dfl.sort_values(['well', t]).reset_index(drop=True)
+    dfl = dfl.sort_values(['welln', t]).reset_index(drop=True)
     dfl = prepare_unstack(dfl, x=x, t=t)
     dfw = dfl.unstack(t)
     pca_m = PCA(n_components=n)
@@ -415,7 +423,7 @@ def annotate(df, verbose=False):
             df['samplename'] = df['compound']
             to_drop.append('samplename')
         dq = df[['sourcename', 'samplename']].copy()
-    elif ('cp' in cols or 'plate' in cols or 's_plate' in cols) and ('well' in cols or 'well_an' in cols or 's_plate' in cols):
+    elif ('cp' in cols or 'plate' in cols or 's_plate' in cols) and ('welln' in cols or 'well' in cols or 's_plate' in cols):
         if 'plate' in cols:
             pass
         elif 'cp' in cols:
@@ -425,15 +433,15 @@ def annotate(df, verbose=False):
             df['plate'] = df['s_plate']
             to_drop.append('plate')
 
-        if 'well_an' in cols:
+        if 'well' in cols:
             pass
-        elif 'well_an' in cols:
-            df['well_an'] = np.array(list('ABCDEFGHIJKLMNOP'))[df['well']//24] + (df['well']%24 + 1).astype(str)
-            to_drop.append('well_an')
+        elif 'welln' in cols:
+            df['well'] = np.array(list('ABCDEFGHIJKLMNOP'))[df['welln']//24] + (df['welln']%24 + 1).astype(str)
+            to_drop.append('well')
         elif 's_well' in cols:
-            df['well_an'] = df['s_well']
-            to_drop.append('well_an')
-        dq = df[['plate', 'well_an']].rename({'well_an':'well'}, axis=1)
+            df['well'] = df['s_well']
+            to_drop.append('well')
+        dq = df[['plate', 'well']]
     else:
         raise ValueError('DataFrame does not contain necessary columns.')
 
@@ -448,7 +456,7 @@ def annotate(df, verbose=False):
         if verbose:
             print(r2.text)
         ll.append(pd.DataFrame(r2.json()))
-    res_df = pd.concat(ll).rename({'well':'well_an'}, axis=1)
+    res_df = pd.concat(ll)
     res_df = df.merge(res_df, how='left').drop(to_drop, axis=1) # , errors='ignore'
     return res_df
 
