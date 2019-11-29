@@ -48,14 +48,11 @@ class Drct():
         self.coef_ = np.zeros([Y.shape[0], 4], float)
         for i in range(Y.shape[0]):
             yi = Y[i]
-            if np.abs((yi[:3] - yi[-3:]).sum() / 3) < 0.3:
-                mean = yi.mean()
-                self.coef_[i] = [mean, mean, xmean, 0]
-            else:
-                lbounds = [yi.min(), yi.min(), x.min(), 1.0]
-                ubounds = [yi.max(), yi.max(), x.max(), 100]
-                start = [yi[0], yi[-1], np.mean(x), 1.0]
-                self.coef_[i], pcov = curve_fit(hill, x, Y[i], p0=start, bounds=(lbounds, ubounds))
+            # diff = np.abs((yi[:3] - yi[-3:]).sum() / 3)
+            lbounds = [yi.min(), yi.min(), x.min(), 1.0]
+            ubounds = [yi.max(), yi.max(), x.max(), 100]
+            start = [yi[0], yi[-1], np.mean(x), 1.0]
+            self.coef_[i], pcov = curve_fit(hill, x, Y[i], p0=start, bounds=(lbounds, ubounds))
         return self
 
     def predict(self, x):
