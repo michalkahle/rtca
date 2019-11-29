@@ -13,12 +13,21 @@ from functools import partial
 # from IPython.core.debugger import set_trace
 import echo
 
-def load_dir(directory, **kwargs):
-    files = [os.path.join(directory, f) for f in sorted(os.listdir(directory)) if f.lower().endswith('.plt')]
+def warning_on_one_line(message, category, filename, lineno, line=None):
+    return ' %s:%s: %s: %s\n' % (filename, lineno, category.__name__, message)
+warnings.formatwarning = warning_on_one_line
+
+def load_dir(directory, layout=None, **kwargs):
+    """Load a directory of RTCA files.
+    """
+    files = [f for f in sorted(os.listdir(directory)) if f.endswith('.PLT')]
+    files = [os.path.join(directory, f) for f in files]
     data = load_files(files, **kwargs)
     if callable(kwargs.get('fix')):
         data = kwargs['fix'](data)
     data = normalize(data, **kwargs)
+    if layout is not None:
+        data = pd.merge(data, layout)
     return data
 
 def load_files(file_list, barcode_re='_A(\\d{6})\\.PLT$', **kwargs):
@@ -34,7 +43,8 @@ def load_files(file_list, barcode_re='_A(\\d{6})\\.PLT$', **kwargs):
                 barcode = int(match.group(1))
             else:
                 raise Exception(
-                    'barcdode_re="%s" not found in file name: "%s"' % (barcode_re, filename))
+                    'barcdode_re="%s" not found in file name: "%s"'
+                    % (barcode_re, filename))
         org['ap'] = barcode
         if not barcode in plates:
             plates[barcode] = [0, 0]
@@ -46,23 +56,22 @@ def load_files(file_list, barcode_re='_A(\\d{6})\\.PLT$', **kwargs):
         ll.append(org)
     return pd.concat(ll, ignore_index=True).reset_index(drop=True)
 
-def normalize(df, layout=None, **kwargs):
+def normalize(df, **kwargs):
     df = df.groupby('ap').apply(lambda x: normalize_plate(x, **kwargs))
 
     fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(12,4))
     df = df.groupby(['ap', 'welln']).apply(lambda x: normalize_well(x, fig))
     df = df.drop(kwargs.get('drop', ['dt', 'org', 'otp']), axis=1) # 'file'
     df = df.reset_index(drop=True)
-    if layout is not None:
-        df = pd.merge(df, layout)
     return df
 
-# zerotime_file=2, zerotime_point=4, zerotime_offset=120
-def normalize_plate(plate, zerotime_file=1, zerotime_point=1, zerotime_offset=0, **kwargs):
-    if plate.file.max() < zerotime_file:
-        raise ValueError('Not enough files. Zero time point should be in file %i but only %i file(s) present.' % (zerotime_file, plate.file.max()))
-    zerotime = plate[(plate.file == zerotime_file) & (plate.otp == zerotime_point)].dt.iloc[0]
-    plate['time'] = pd.to_numeric(plate['dt'] - zerotime) / 3.6e12 + zerotime_offset / 3600
+# t0_file=2, t0_point=4, t0_offset=120
+def normalize_plate(plate, t0_file=1, t0_point=1, t0_offset=0, **kwargs):
+    if plate.file.max() < t0_file:
+        raise ValueError('Not enough files. Zero time point should be in file '
+        '%i but only %i file(s) present.' % (t0_file, plate.file.max()))
+    t0 = plate[(plate.file == t0_file) & (plate.otp == t0_point)].dt.iloc[0]
+    plate['time'] = pd.to_numeric(plate['dt'] - t0) / 3.6e12 + t0_offset / 3600
     return plate
 
 def normalize_well(well, fig, spike_threshold=3):
@@ -104,7 +113,7 @@ def normalize_well(well, fig, spike_threshold=3):
         norm_point = np.where(well['time'] <= 0)[0][-1]
         norm_value = well.iloc[norm_point]['ci']
         if norm_value < 0.1: # negative values here flip the curve and small values make it grow too fast
-            warnings.warn('Negative or small CI at time zero. Well %s removed.' % well['welln'].iloc[0])
+            warnings.warn('Negative or small CI at time zero. Well %s removed.' % echo.welln2well_384(well['welln'].iloc[0]))
             return None
         well['nci'] = well['ci'] / norm_value
         nci = well['nci'].copy() + 1
@@ -161,26 +170,17 @@ def plate_96():
     return ll
 
 def plate_384():
-    ll = pd.DataFrame(dict(row = np.repeat(np.arange(16),24), col = np.tile(np.arange(24),16), edge=0))
+    ll = pd.DataFrame(dict(
+        row = np.repeat(np.arange(16),24),
+        col = np.tile(np.arange(24),16),
+        welln = np.arange(384),
+        edge=0))
     for m in [1,2]:
         ll.edge[ll.row < m] += 1
         ll.edge[ll.col < m] += 1
         ll.edge[ll.row > ll.row.max() - m] += 1
         ll.edge[ll.col > ll.col.max() - m] += 1
-    # ll['spiral'] = spiral(16, 24).flatten()
     return ll
-
-def spiral(m, n):
-    M = np.zeros([m, n], dtype=int)
-    i, j = 0, 0 # location of "turtle"
-    di, dj = 0, 1 # direction of movement
-    h = (np.min([m,n]))/2
-    for ii in range(m * n):
-        M[i, j] = ii
-        if (i < h and (i == j+1 or i+1 == n-j)) or (i >= m-h and (m-i == n-j or m-i == j+1)):
-            di, dj = dj, -di # turn clockwise
-        i, j = i + di, j + dj
-    return M
 
 _rows = np.array([chr(x) for x in range(65, 91)] + ['A' + chr(x) for x in range(65, 71)])
 
@@ -279,7 +279,7 @@ def plot3d(dd, color=None, factor=False, cmap='tab10', hover='welln', publish=Fa
         marker['colorbar'] = dict(title=color, thickness=10, len=.3, y=.8)
         marker['showscale'] = True
         trace_params['marker'] = marker
-        trace = go.Scatter3d(x=dd[xc], y=dd[yc], z=dd[zc], hovertext=dd.compound, **trace_params)
+        trace = go.Scatter3d(x=dd[xc], y=dd[yc], z=dd[zc], hovertext=dd['compound'], **trace_params)
         traces.append(trace)
         layout['showlegend'] = False
 
@@ -341,7 +341,6 @@ def pca_filter(dfl, n=3, plot=True, x='lnci', t='tp'):
     dfw = dfl.unstack(t)
     pca_m = PCA(n_components=n)
     X_pca = pca_m.fit_transform(dfw.values)
-
     X_components_df = pd.DataFrame(pca_m.components_.T,
         index=dfw.columns.droplevel(),
         columns=pd.MultiIndex.from_product([['w'], range(1,n+1)], names=[None, 'pc'])
@@ -362,7 +361,8 @@ def prepare_unstack(dfw, x='lnci', t='tp'):
     if t == 'time':
         to_drop.remove(t)
     dfw = dfw.drop(to_drop, axis=1)
-    dfw.set_index([cc for cc in dfw.columns if cc != x], inplace=True)
+    dfw.set_index(
+        [cc for cc in dfw.columns if (cc != x) & (cc != t)] + [t], inplace=True)
     return dfw
 
 def plot_explained_variance(pca_m):
@@ -395,6 +395,12 @@ def calculate_z_score(p, components=None):
         res += ((p[pc] - p[pc].mean())/ p[pc].std())**2
     return np.sqrt(res)
 
+def add_znorm(df):
+    znorm = np.zeros(df.shape[0])
+    for pc in [col for col in df.columns if 'PC' in col]:
+        znorm += (df[pc] / df[pc].std())**2
+    df['znorm'] = np.sqrt(znorm)
+
 def annotate(df, verbose=False):
     import requests
     import urllib3
@@ -423,7 +429,7 @@ def annotate(df, verbose=False):
             df['samplename'] = df['compound']
             to_drop.append('samplename')
         dq = df[['sourcename', 'samplename']].copy()
-    elif ('cp' in cols or 'plate' in cols or 's_plate' in cols) and ('welln' in cols or 'well' in cols or 's_plate' in cols):
+    elif ('cp' in cols or 'plate' in cols or 's_plate' in cols) and ('welln' in cols or 'well' in cols or 's_well' in cols):
         if 'plate' in cols:
             pass
         elif 'cp' in cols:
