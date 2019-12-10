@@ -466,6 +466,28 @@ def annotate(df, verbose=False):
     res_df = df.merge(res_df, how='left').drop(to_drop, axis=1) # , errors='ignore'
     return res_df
 
+tts = np.cumsum(np.concatenate([[0], 1.05**np.arange(43) * .5]))
+
+def resample_plate(plate, tts=tts, column='lnci'):
+    well = plate.query('welln == 0')
+    source_t = well['time'].values
+    ii = np.searchsorted(source_t, tts)
+    t1, t2 = source_t[ii-1], source_t[ii]
+
+    index = [c for c in
+        ['cl', 'cp', 'ap', 'welln', 'library', 'compound', 'sid', 'log_c', 'tp']
+        if c in plate.columns]
+    plate2 = plate.set_index(index)[column].unstack()
+    tps = well['tp'].iloc[ii]
+    c1 = plate2[tps - 1].values
+    c2 = plate2[tps].values
+    res = c1 + (c2 - c1) * ((tts - t1)/(t2 - t1))
+    columns = pd.MultiIndex.from_product([[column], tts], names=[None, 'time'])
+    return pd.DataFrame(res, index=plate2.index, columns=columns).stack().reset_index()
+
+
+
+
 
 if __name__ == '__main__':
     pass
