@@ -43,16 +43,26 @@ class Drct():
     def fit(self, x, Y):
         self.x = x
         self.Y = Y
-        xmean = x.mean()
-
         self.coef_ = np.zeros([Y.shape[0], 4], float)
-        for i in range(Y.shape[0]):
+        inflection, slope = 3, 4
+
+        for i in range(Y.shape[0]-1, -1, -1):
             yi = Y[i]
-            # diff = np.abs((yi[:3] - yi[-3:]).sum() / 3)
-            lbounds = [yi.min(), yi.min(), x.min(), 1.0]
+            diff = np.abs((yi[:3] - yi[-3:]).sum() / 3)
+
             ubounds = [yi.max(), yi.max(), x.max(), 100]
             start = [yi[0], yi[-1], np.mean(x), 1.0]
-            self.coef_[i], pcov = curve_fit(hill, x, Y[i], p0=start, bounds=(lbounds, ubounds))
+            lbounds = [yi.min(), yi.min(), x.min(), 1.0]
+            # if i < Y.shape[0]-1 and diff < 1:
+            #     previous = self.coef_[i - 1]
+
+            #     ubounds[inflection] = previous[inflection] + abs(diff)
+            #     lbounds[inflection] = previous[inflection] - abs(diff)
+            #     start[inflection] = previous[inflection]
+
+
+            self.coef_[i], pcov = curve_fit(hill, x, yi, p0=start, bounds=(lbounds, ubounds))
+
         return self
 
     def predict(self, x):
