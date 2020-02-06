@@ -60,6 +60,7 @@ def normalize(df, **kwargs):
     df = df.groupby('ap').apply(lambda x: normalize_plate(x, **kwargs))
 
     fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(12,4))
+    ax0.set_title('outliers'); ax1.set_title('spikes')
     df = df.groupby(['ap', 'welln']).apply(lambda x: normalize_well(x, fig))
     df = df.drop(kwargs.get('drop', ['dt', 'org', 'otp']), axis=1) # 'file'
     df = df.reset_index(drop=True)
@@ -75,7 +76,7 @@ def normalize_plate(plate, t0_file=1, t0_point=1, t0_offset=0, **kwargs):
     return plate
 
 def normalize_well(well, fig, spike_threshold=3):
-    ax0, ax1 = fig.get_axes(); ax0.set_title('outliers'); ax1.set_title('spikes')
+    ax0, ax1 = fig.get_axes()
     well['ci'] = (well['org'] - well['org'].loc[well['tp'].idxmin()]) / 15
     outliers = well.loc[abs(well['ci']) > 100].copy()
     if not outliers.empty:
