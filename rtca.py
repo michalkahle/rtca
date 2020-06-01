@@ -11,7 +11,6 @@ import warnings
 from math import sqrt
 from functools import partial
 # from IPython.core.debugger import set_trace
-import echo
 
 def warning_on_one_line(message, category, filename, lineno, line=None):
     return ' %s:%s: %s: %s\n' % (filename, lineno, category.__name__, message)
@@ -81,7 +80,7 @@ def normalize_well(well, fig, spike_threshold=3):
     outliers = well.loc[abs(well['ci']) > 100].copy()
     if not outliers.empty:
         outliers['blocks'] = ((outliers['tp'] - outliers['tp'].shift(1)) > 1).cumsum()
-        label = '%s-%s' % (outliers['ap'].iloc[0], echo.welln2well_384(outliers['welln'].iloc[0]))
+        label = '%s-%s' % (outliers['ap'].iloc[0], welln2well_384(outliers['welln'].iloc[0]))
         ax0.plot(well['tp'], well['ci'], label=label)
         ax0.scatter(outliers['tp'], outliers['ci'], facecolors='none', edgecolors='r', label=None)
         ax0.legend(); ax0.set_xlabel('tp'); ax0.set_ylabel('ci')
@@ -98,7 +97,7 @@ def normalize_well(well, fig, spike_threshold=3):
     s = well['ci']
     spikes = well[(s - s.shift(1) > spike_threshold) & (s - s.shift(-1) > spike_threshold)]
     if not spikes.empty:
-        label = '%s-%s' % (spikes['ap'].iloc[0], echo.welln2well_384(spikes['welln'].iloc[0]))
+        label = '%s-%s' % (spikes['ap'].iloc[0], welln2well_384(spikes['welln'].iloc[0]))
         ax1.plot(well['tp'], well['ci'], label=label)
         ax1.scatter(spikes['tp'], spikes['ci'], facecolors='none', edgecolors='r', label=None)
         ax1.legend(); ax1.set_xlabel('tp'); ax1.set_ylabel('ci')
@@ -114,7 +113,7 @@ def normalize_well(well, fig, spike_threshold=3):
         norm_point = np.where(well['time'] <= 0)[0][-1]
         norm_value = well.iloc[norm_point]['ci']
         if norm_value < 0.1: # negative values here flip the curve and small values make it grow too fast
-            warnings.warn('Negative or small CI at time zero. Well %s removed.' % echo.welln2well_384(well['welln'].iloc[0]))
+            warnings.warn('Negative or small CI at time zero. Well %s removed.' % welln2well_384(well['welln'].iloc[0]))
             return None
         well['nci'] = well['ci'] / norm_value
         nci = well['nci'].copy() + 1
@@ -486,6 +485,26 @@ def resample_plate(plate, tts=tts, column='lnci'):
     columns = pd.MultiIndex.from_product([[column], tts], names=[None, 'time'])
     return pd.DataFrame(res, index=plate2.index, columns=columns).stack().reset_index()
 
+def well2welln_384(wells, form=384):
+    form = int(form)
+    if form not in [96, 384, 1536]:
+        raise ValueError('Only formats 96, 384 and 1536 supported.')
+    n_cols = int(sqrt(form/2*3))
+    wells = wells if type(wells) == np.ndarray else np.array(wells, dtype=np.str)
+    _well_regex = re.compile('^([A-Z]{1,2})(\d{1,2})')
+    def _w2wn(well, n_cols):
+        match = _well_regex.match(well)
+        if not match:
+            raise ValueError('Well not recognized: "%s"' % well)
+        rr, cc = match.group(1), match.group(2)
+        rrn = ord(rr) - 65 if len(rr) == 1 else ord(rr[1]) - 39
+        ccn = int(cc) - 1
+        return rrn * n_cols + ccn
+    _vw2wn = np.vectorize(_w2wn, excluded=('n_cols'))
+    wns = _vw2wn(wells, n_cols)
+    if np.any(wns >= form) or np.any(wns < 0):
+        raise ValueError('welln out of range')
+    return wns
 
 
 
