@@ -361,7 +361,8 @@ def pca_filter(dfl, n=3, plot=True, x='lnci', t='tp'):
 
 def prepare_unstack(dfw, x='lnci', t='tp'):
     to_drop = {'time', 'ci', 'nci', 'lci', 'lnci'} & set(dfw.columns)
-    to_drop.remove(x)
+    if x in to_drop:
+        to_drop.remove(x)
     if t == 'time':
         to_drop.remove(t)
     dfw = dfw.drop(to_drop, axis=1)
