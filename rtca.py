@@ -245,7 +245,6 @@ def plot(df, x='time', y='nci', color=None):
 
 def plot3d(dd, color=None, factor=False, cmap='tab10', hover='welln', publish=False, projection='PCA'):
     import plotly
-    import plotly.plotly as py
     import plotly.graph_objs as go
 
     trace_params = {'mode': 'markers', 'hoverinfo':'name+text'}
@@ -275,7 +274,12 @@ def plot3d(dd, color=None, factor=False, cmap='tab10', hover='welln', publish=Fa
             traces.append(trace)
             layout['showlegend'] = True
     else:
-        marker['color'] = dd[color].values#.astype('category').cat.codes.values
+        if color is None:
+            raise Exception('Column name for color must be specified.')
+        elif dd[color].dtype.name == 'category':
+            marker['color'] = dd[color].cat.codes.values
+        else:
+            marker['color'] = dd[color].values
         marker['colorbar'] = dict(title=color, thickness=10, len=.3, y=.8)
         marker['showscale'] = True
         trace_params['marker'] = marker
