@@ -73,7 +73,7 @@ def normalize(df, **kwargs):
 
     fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(12,4))
     ax0.set_title('outliers'); ax1.set_title('spikes')
-    df = df.groupby(['ap', 'welln']).apply(lambda x: normalize_well(x, fig))
+    df = df.groupby(['ap', 'welln'], as_index=False).apply(lambda x: normalize_well(x, fig))
     df = df.drop(kwargs.get('drop', ['dt', 'org', 'otp']), axis=1) # 'file'
     df = df.reset_index(drop=True)
     return df
@@ -454,6 +454,19 @@ def resample_plate(plate, tts=tts, column='lnci'):
     res = c1 + (c2 - c1) * ((tts - t1)/(t2 - t1))
     columns = pd.MultiIndex.from_product([[column], tts], names=[None, 'time'])
     return pd.DataFrame(res, index=plate2.index, columns=columns).stack().reset_index()
+
+def welln2well_384(wells, form=384):
+    form = int(form)
+    if form not in [96, 384, 1536]:
+        raise ValueError('Only formats 96, 384 and 1536 supported.')
+    n_cols = int(sqrt(form/2*3))
+
+    wells = wells if type(wells) == np.ndarray else np.array(wells, dtype=np.int)
+    if np.any(wells >= form) or np.any(wells < 0):
+        raise ValueError('welln out of range')
+    rr = _rows[wells // n_cols]
+    cc = (wells % n_cols + 1).astype(str)
+    return np.core.defchararray.add(rr, cc)
 
 def well2welln_384(wells, form=384):
     form = int(form)
