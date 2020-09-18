@@ -19,14 +19,19 @@ scipy.cluster.hierarchy.set_link_color_palette(['gray', 'goldenrod'])
 from plotnine import *
 from time import time
 from scipy.optimize import least_squares
+from shutil import which
 
 def warning_on_one_line(message, category, filename, lineno, line=None):
     return ' %s:%s: %s: %s\n' % (filename, lineno, category.__name__, message)
 warnings.formatwarning = warning_on_one_line
 
+# Load RTCA files ####################################################
+
 def load_dir(directory, layout=None, **kwargs):
     """Load a directory of RTCA files.
     """
+    if not which('mdb-schema'):
+        raise Exception('`mdbtools` not installed. ')
     files = [f for f in sorted(os.listdir(directory)) if f.endswith('.PLT')]
     files = [os.path.join(directory, f) for f in files]
     data = load_files(files, **kwargs)
@@ -166,6 +171,8 @@ def load_file(filename):
     return org
 
 _rows = np.array([chr(x) for x in range(65, 91)] + ['A' + chr(x) for x in range(65, 71)])
+
+# Plotting ####################################################
 
 def plot_overview(df, x='time', y='nci', group='ap', format=384):
     fig, ax = plt.subplots(1, 1, figsize=(24, 16))
