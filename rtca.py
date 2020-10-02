@@ -518,12 +518,26 @@ def plot_comparisons2():
      + theme(figure_size=(8, 2))
     ).draw()
     
+def plot_pca_explained_variance(model):
+    evr = model.explained_variance_ratio_
+    residual = 1 - evr.sum()
+    n = model.n_components
+    index = np.arange(1, n+2)
+    color = ['g' for i in range(n)] + ['r']
+    variance = np.concatenate([evr, np.array([residual])])
+    fig, ax = plt.subplots(figsize=(8,1))
+    ax.barh(index, variance, color=color)
+    ax.set_yticks(range(1, n, n//3))
+    ax.invert_yaxis()
+    ax.set_xlim(0,1)
+    ax.set_xlabel('explained variance')
+    ax.set_ylabel('components')
+    ax.text(.99, 0.1, 'residual = %.3f' % residual, color='r', transform=ax.transAxes, ha='right')
     
 
-# TDRC ####################################################
+# CTRS ####################################################
 
 inflectionShift = 6
-slopeFactorHill = 10
 
 cc = np.array([-8.7, -8.4, -8.1, -7.8, -7.5, -7.2, -6.9, -6.6, -6.3, -6. , -5.7, -5.4, -5.1, -4.8, -4.5, -4.2])
 cc1 = np.expand_dims(cc, 0)
@@ -532,17 +546,8 @@ x = np.linspace(-1,1,44)
 T = np.zeros([44,10])
 for n, r in enumerate(np.identity(10)):
     T[:,n] = -np.polynomial.chebyshev.chebval(-x, r)
-    
-def f_tdrc_hill(p):
-    Q = T @ p.reshape([3,10]).T
-    max_effect = Q[:,0:1]
-    inflection = Q[:,1:2] - inflectionShift
-    slope = Q[:,2:3] * slopeFactorHill
-    slope = slope * (slope > 0)
-    Yhat = max_effect / (1 + (cc1 / inflection)**slope)
-    return Yhat
 
-def f_tdrc_logistic(p):
+def f_ctrs(p):
     Q = T @ p.reshape([3,10]).T
     m = Q[:,0:1]
     i = Q[:,1:2] - inflectionShift
@@ -551,48 +556,87 @@ def f_tdrc_logistic(p):
     Yhat = m / (1 + np.exp(-s*(cc1 - i)))
     return Yhat
 
-def costf_residuals(Y, f_tdrc):
-    return lambda p: (f_tdrc(p) - Y).flatten()
+class CTRS():
+    """CTRS object"""
+    def __init__(self, cost='potency_invariant', **kwargs):
+        self.cost = cost
+        if cost == 'residuals':
+            self.costf = self.costf_residuals
+        elif cost == 'regularized':
+            self.costf = self.costf_regularized
+        elif cost == 'potency_invariant':
+            self.costf = self.costf_potency_invariant
+        self.verbose = kwargs.pop('verbose', False)
+        self.kwargs = kwargs
 
-def costf_regularized(Y, f_tdrc):
-    return lambda p: np.concatenate([(f_tdrc(p) - Y).flatten(), p])
+    def costf_residuals(self, Y):
+        return lambda p: (f_ctrs(p) - Y).flatten()
 
-def costf_potency_invariant(Y, f_tdrc):
-    return lambda p: np.concatenate([(f_tdrc(p) - Y).flatten(), p[:10], p[11:]])
+    def costf_regularized(self, Y):
+        return lambda p: np.concatenate([(f_ctrs(p) - Y).flatten(), p])
 
-def fit_tdrc(row, cf=costf_potency_invariant, f_tdrc=f_tdrc_hill, verbose=False, **kwargs):
-    Y = row.values.reshape([16,44]).T
-    costf = cf(Y, f_tdrc)
-    t0 = time()
-    res = least_squares(costf, np.zeros(30), jac='2-point', **kwargs) # method='lm',)
-    res['time'] = time() - t0
-    res['success'] = 'success' if res['success'] else 'fail'
-    if verbose:
-        print('{time:.2f}s\t{success}\t cost={cost:.2f}\t nfev={nfev}'.format(**res))
-    return pd.Series(res.x)
+    def costf_potency_invariant(self, Y):
+        return lambda p: np.concatenate([(f_ctrs(p) - Y).flatten(), p[:10], p[11:]])
 
-def plot_tdrc(Y, ax=None):
+    def fit(self, *args, **kwargs):
+        return self
+    
+    def transform(self, X):
+        Y  = np.empty([X.shape[0], 30])
+        for m, row in enumerate(X):
+            Y[m, :] = self.transform_single(row)
+        return Y
+        
+    def transform_single(self, row):
+        Y = row.reshape([16,44]).T
+        t0 = time()
+        res = least_squares(self.costf(Y), np.zeros(30), jac='2-point', **self.kwargs)
+        success = 'success' if res['success'] else 'fail'
+        if self.verbose:
+            print(f'{time() - t0:.2f}s\t{success}\t cost={res.cost:.2f}\t nfev={res.nfev}')
+        return res.x
+    
+    def inverse_transform(self, Y):
+        X = np.empty([Y.shape[0], 16*44])
+        for m, p in enumerate(Y):
+            X[m, :] = self.inverse_transform_single(p).T.flatten()
+        return X
+    
+    def inverse_transform_single(self, p):
+        return f_ctrs(p)
+    
+    def fit_transform(self, X):
+        self.transform(X)
+        
+    def __repr__(self):
+        params = {'cost' : self.cost, **self.kwargs}
+        if self.verbose:
+            params['verbose'] = True
+        params_str = ', '.join(['{}={}'.format(key, val) for key, val in params.items()])
+        return f'CTRS({params_str})'
+
+def plot_ctrs(Y, ax=None):
     jet = plt.get_cmap('jet')
     if ax is None: ax = plt.gca()
     l = Y.shape[0]
     for i in range(l):
         ax.plot(cc, Y[i,:], color=jet(i/l), linewidth=1)
 
-def dg_tdrc(row, lim=False, return_p=False, f_tdrc=f_tdrc_hill, **kwargs):
+def dg_ctrs(row, ylim=False, **kwargs):
+    model = CTRS(**kwargs)
+    p = model.transform_single(row.values)
     Y = row.values.reshape([16,44]).T
-    p = fit_tdrc(row, f_tdrc=f_tdrc, **kwargs)
-    
     
     fig = plt.figure(tight_layout=True, figsize=(10, 5))
     ax1 = plt.subplot(231)
-    plot_tdrc(Y, ax1)
+    plot_ctrs(Y, ax1)
     ax1.set_title('{1}, {2}'.format(*row.name))
 
     ax2 = plt.subplot(232, sharey=ax1)
-    plot_tdrc(f_tdrc(p.values), ax2)
+    plot_ctrs(f_ctrs(p), ax2)
     
     ax3 = plt.subplot(233)
-    q = p.values.reshape([3,10]).T
+    q = p.reshape([3,10]).T
     ax3.axhline(color='gray')
     ax3.plot(q[:,0], '.-', label='max_effect')
     ax3.plot(q[:,1], '.-', label='inflection')
@@ -614,15 +658,15 @@ def dg_tdrc(row, lim=False, return_p=False, f_tdrc=f_tdrc_hill, **kwargs):
     ax6.plot(slope, '.-', color='C2')
     ax6.set_title('slope')
     
-    if lim:
+    if ylim:
         ax1.set_ylim((-4, 1))
         ax3.set_ylim((-1, 1))
         ax5.set_ylim((-9, -4))
         ax6.set_ylim((0, 40))
         
-    return p.values if return_p else None
+    return None
 
-def compare_tdrc_group(raw, tdrc, compounds, drc, title=None, concentration_independent=True, **kwargs):
+def compare_ctrs_group(original, ctrs, compounds, title=None, concentration_independent=True, **kwargs):
     fig0, ax0 = plt.subplots()
     plt.scatter('tSNE1', 'tSNE2', data=compounds)
     for r, row in enumerate(compounds.iloc):
@@ -630,17 +674,7 @@ def compare_tdrc_group(raw, tdrc, compounds, drc, title=None, concentration_inde
     if title:
         plt.title(title)
     
-#     return None
-    
-    if drc == 'Hill':
-        f_tdrc = f_tdrc_hill
-    elif drc == 'logistic':
-        f_tdrc = f_tdrc_logistic
-        
-    else:
-        raise ValueError('Parameter `drc` must be specified as either `Hill` or `logistic`.')
-    
-    cls = raw.index.unique(level='cl')
+    cls = original.index.unique(level='cl')
     fig1, ax1 = plt.subplots(len(compounds)+1, 
                            2*len(cls)+1, 
                            sharex=True, sharey=True, 
@@ -665,17 +699,14 @@ def compare_tdrc_group(raw, tdrc, compounds, drc, title=None, concentration_inde
                 ax1[0, c*2].axis('off')
                 ax1[0, c*2+1].axis('off')
                 
-            row = raw.query('cl == @cl & compound == @compound').iloc[0]
+            row = original.query('cl == @cl & compound == @compound').iloc[0]
             Y = row.values.reshape([16,44]).T
-            plot_tdrc(Y, ax1[r+1, c * 2])
+            plot_ctrs(Y, ax1[r+1, c * 2])
 
-#             if fit:
-#                 p = fit_tdrc(row, **kwargs).values
-#             else:
-            p = tdrc.query('cl == @cl & compound == @compound').iloc[:,3:].copy().values.flatten()
+            p = ctrs.query('cl == @cl & compound == @compound').copy().values.flatten()
             if concentration_independent:
                 p[10] = 0
-            plot_tdrc(f_tdrc(p), ax1[r+1, c * 2 + 1])
+            plot_ctrs(f_ctrs(p), ax1[r+1, c * 2 + 1])
 
             q = p.copy().reshape([3,10]).T
 #             q[0,1] = 0
