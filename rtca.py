@@ -19,6 +19,7 @@ from plotnine import *
 from time import time
 from scipy.optimize import least_squares
 from shutil import which
+import fastcluster
 
 def warning_on_one_line(message, category, filename, lineno, line=None):
     return ' %s:%s: %s: %s\n' % (filename, lineno, category.__name__, message)
@@ -334,57 +335,8 @@ def plot3d(dd, color=None, factor=None, cmap=None, hover=None, projection='UMAP'
     fig = go.Figure(data=traces, layout=go.Layout(layout))
     plotly.offline.iplot(fig)
 
-# PCA ###########################################################################
+# helper functions ###########################################################################
 
-# def pca(df, n=3, plot=True):
-#     dfi = set_index(df)
-#     model = PCA(n_components=n, svd_solver='full')
-#     PCs = model.fit_transform(dfi.values)
-#     PCs_df = pd.DataFrame(PCs, index=dfi.index, columns=range(n)).reset_index()
-#     if plot:
-#         plot_explained_variance(model)
-#     return model, PCs_df
-
-# def pca_filter(df, n=3, plot=True):
-#     model, X_pca_df = pca(df, n, plot)
-    
-#     X_components_df = pd.DataFrame(model.components_.T,
-#         index=dfw.columns.droplevel(),
-#         columns=pd.MultiIndex.from_product([['w'], range(1,n+1)], names=[None, 'pc'])
-#     )
-
-#     F = model.inverse_transform(X_pca)
-
-#     filtered = pd.DataFrame(F, index=dfw.index, columns=dfw.columns)
-#     residual = dfw - filtered
-#     if plot:
-#         rtca.plot_explained_variance(model)
-#     return X_components_df, filtered, residual
-
-
-
-# def set_index(df):
-#     cols = [col for col in df.columns if type(col) != int]
-#     return df.set_index(cols)
-
-# def reset_index(df):
-#     return df.reset_index()
-
-
-
-
-# def prepare_unstack(dfw, x='lnci', t='tp'):
-#     to_drop = {'time', 'ci', 'nci', 'lci', 'lnci'} & set(dfw.columns)
-#     if x in to_drop:
-#         to_drop.remove(x)
-#     if t == 'time':
-#         to_drop.remove(t)
-#     dfw = dfw.drop(to_drop, axis=1)
-#     dfw.set_index(
-#         [cc for cc in dfw.columns if (cc != x) & (cc != t)] + [t], inplace=True)
-#     return dfw
-
-    
 def extract_data(df):
     ints = [col for col in df.columns if type(col) == int]
     if len(ints) > 2:
@@ -416,65 +368,98 @@ def add_umap(df, dims=3, **kwargs):
     return df
 
 
-# def calculate_z_score(p, components=None):
-#     res = np.zeros_like(p.PC1)
-#     for pc in p.columns[p.columns.str.contains('PC')][:components]:
-#         res += ((p[pc] - p[pc].mean())/ p[pc].std())**2
-#     return np.sqrt(res)
-
-# def add_znorm(df):
-#     znorm = np.zeros(df.shape[0])
-#     for pc in [col for col in df.columns if 'PC' in col]:
-#         znorm += (df[pc] / df[pc].std())**2
-#     df['znorm'] = np.sqrt(znorm)
-
 # Clustering ######################################################################################
 
-def hierarchical_clustering(df, k=10, plot=False, figsize=(8, 8)):
+def replace_with_rainbow_text(lbl, strings, colors, ax=None, **kwargs):
+    ax = ax if ax else plt.gca()
+    t = lbl.get_transform()
+    x, y = lbl.get_position()
+    renderer = ax.figure.canvas.get_renderer()
+    ll = []
+    for s, c in zip(strings, colors):
+        text = ax.text(x, y, s , color=c, transform=t, **kwargs)
+        text.draw(renderer)
+        ex = text.get_window_extent()
+        t = mpl.transforms.offset_copy(text.get_transform(), x=ex.width, units='dots')
+        ll.append(text)
+    lbl.set_visible(False)
+    return ll
+
+def hierarchical_clustering(df, k=10, figsize=(8, 8), metric='euclidean', 
+                            truncate=False, plot=True, add_clusters=False, show_contracted=False):
     X = extract_data(df)
-    Z = scipy.cluster.hierarchy.linkage(X, 'ward')
-    clusters = scipy.cluster.hierarchy.fcluster(Z, t=k, criterion='maxclust')
+    Z = fastcluster.linkage(X, 'ward', metric=metric)
     max_d = Z[-k+1, 2]
+    truncate_mode = 'lastp' if truncate else None
+    labels = df['compound'].values
+    groups = df['moa'] if 'moa' in df.columns else None
+    
     if plot:
         fig, ax = plt.subplots(figsize=figsize)
-        ax.axvline(x=max_d, c='silver')
-        R = scipy.cluster.hierarchy.dendrogram(Z,
-                       labels=df['compound'].values,
-                       color_threshold=max_d,
-                       leaf_font_size=8,
-                       above_threshold_color='gray',
-                       orientation='left',
-                       ax=ax)
-        if 'moa' in df.columns:
-            cm = plt.cm.get_cmap("tab10")
-            for lbl in ax.get_ymajorticklabels():
-                iloc = np.where(df['compound'] == lbl._text)[0][0]
-                moa = df['moa'].cat.codes.iloc[iloc]
-                if moa > -1:
-                    lbl.set_color(cm(int(moa)))
-                else:
-                    lbl.set_color('silver')
-            proxy_artists, labels = [], []
-            for moa in df['moa'].cat.categories:
-                proxy_artists.append(mpl.lines.Line2D([0], [0]))
-                labels.append(moa)
-            legend = ax.legend(proxy_artists, labels, handletextpad=0, handlelength=0)
-            for n, text in enumerate(legend.texts):
-                text.set_color(cm(n))
-
-
+        R = scipy.cluster.hierarchy.dendrogram(
+            Z,
+            labels=labels,
+            truncate_mode=truncate_mode,
+            p=k,
+            color_threshold=max_d,
+            leaf_font_size=8,
+            above_threshold_color='gray',
+            orientation='left',
+            ax=ax,
+            show_contracted=show_contracted,
+        )
         [ax.spines[key].set_visible(False) for key in ['left', 'right', 'top', 'bottom']]
         ax.invert_yaxis()
-        ax.set_xlabel('euclidean distance')
+        ax.set_xlabel(metric + ' distance')
         ax.set_title('k=' + str(k))
-        #leaves = pd.DataFrame({'compound':R['ivl'], 'leaf':np.arange(len(R['ivl']))})
-        #df = df.merge(leaves)    
-
-    df['cluster'] = pd.Categorical(clusters)
-    #return fig, ax
+        
+        if groups is not None:
+            cm = plt.cm.get_cmap('tab10')
+            if truncate:
+                lg = len(groups)
+                G = np.zeros([2 * lg - 1, len(groups.cat.categories)])
+                for ii, code in enumerate(groups.cat.codes):
+                    G[ii, code] = 1
+                for ii, row in enumerate(Z):
+                    G[lg + ii] = G[int(row[0])] + G[int(row[1])]
+                fig.canvas.draw() # recompute autoscaled limits
+                for ii, lbl in enumerate(ax.get_ymajorticklabels()):
+                    leave = R['leaves'][ii]
+                    gg = G[leave]
+                    tt, cc = [], []
+                    for jj, x in enumerate(gg):
+                        if not (x == 0.0 or jj == 7):
+                            tt.append('\u2b24' * int(x))
+                            cc.append(cm(jj))
+                    jj, x = 7, gg[7]
+                    if 0 < x <= 3:
+                        tt.append('\u2b24' * int(x))
+                        cc.append(cm(jj))
+                    elif 2 < x:
+                        tt.append(str(int(x)) + '\u00d7' + '\u2b24')
+                        cc.append(cm(jj))
+                    replace_with_rainbow_text(lbl, tt, cc, ax=ax, size=9, va='center_baseline', ha='left')    
+            else:
+                for lbl in ax.get_ymajorticklabels():
+                    iloc = np.where(labels == lbl._text)[0][0]
+                    moa = groups.cat.codes.iloc[iloc]
+                    if moa > -1:
+                        lbl.set_color(cm(int(moa)))
+                    else:
+                        lbl.set_color('silver')
+                ax.axvline(x=max_d, c='silver')
+            proxy_artists, labs = [], []
+            for moa in groups.cat.categories:
+                proxy_artists.append(mpl.lines.Line2D([0], [0]))
+                labs.append('\u2b24 ' + moa if truncate else moa)
+            legend = ax.legend(proxy_artists, labs, handletextpad=0, handlelength=0, loc='upper left')
+            for n, text in enumerate(legend.texts):
+                text.set_color(cm(n))
+    if add_clusters:
+        clusters = scipy.cluster.hierarchy.fcluster(Z, t=k, criterion='maxclust')
+        df['cluster'] = pd.Categorical(clusters)
     
 fn = 'clustering_comparisons.csv'
-    
 def evaluate_clustering(df, dr_method, k_min=10, k_max=30):
     if os.path.isfile(fn):
         ec = pd.read_csv(fn)
@@ -511,13 +496,45 @@ def plot_comparisons():
     
 def plot_comparisons2():
     ec = pd.read_csv(fn)
+    labels = {}
+    fig, ax = plt.subplots(1, 2, figsize=(8, 2), sharex=True, sharey=False)
+    for ii, index in enumerate(['AMI', 'ARI']):
+        df = ec.query('index == @index').set_index(['dr', 'k', 'index']).unstack('dr')
+        dr = df.columns.get_level_values('dr')
+        k = df.index.get_level_values('k').values
+        X = df.values.T
+        for jj, method in enumerate(dr):
+            if method.startswith('PCA'):
+                kwa = dict(label='PCA', color='red', lw=3, zorder=2)
+            elif method.startswith('CTRS'):
+                kwa = dict(label='CTRS', color='green', lw=3, zorder=3)
+            elif method.startswith('UMAP'):
+                kwa = dict(label='UMAP', color='silver', lw=3, zorder=1)
+
+            labels[kwa['label']] = ax[ii].plot(k, X[jj], alpha=.5, **kwa)[0]
+        ax[ii].set_title(index)
+        ax[ii].set_xlabel('# clusters')
+        [ax[ii].spines[key].set_visible(False) for key in ['left', 'right', 'top', 'bottom']]
+    fig.legend(labels.values(), labels.keys(), loc=7) #ncol=3
+    # fig.tight_layout()
+    fig.subplots_adjust(right=0.85)
+#     fig.set_facecolor('pink')
+
+def plot_comparisons3():
+    ec = pd.read_csv(fn)
+    ec['method'] = ec['dr'].str.extract(r'(\D+)')
+    ec['method'] = pd.Categorical(ec['method'], categories=['PCA', 'UMAP', 'CTRS'], ordered=True)
+    ec['dr'] = pd.Categorical(ec['dr'], ordered=True)
+#     ec['dr'].cat.categories = ec['dr'].cat.categories[::-1]
     (ggplot(ec)
-     + aes('k', 'value', color='dr')
-     + geom_line()
+     + aes('k', 'value', color='method', group='dr')
+     + geom_line(alpha=0.5, size=1)
      + facet_grid('~index')
-     + theme(figure_size=(8, 2))
+     + theme(figure_size=(6, 2))
+     + labs(x='number of clusters', y=None)
+     + scale_color_manual(['red', 'silver', 'green'])
     ).draw()
-    
+
 def plot_pca_explained_variance(model):
     evr = model.explained_variance_ratio_
     residual = 1 - evr.sum()
