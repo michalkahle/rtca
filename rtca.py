@@ -385,88 +385,101 @@ def replace_with_rainbow_text(lbl, strings, colors, ax=None, **kwargs):
     lbl.set_visible(False)
     return ll
 
-def hierarchical_clustering(df, k=10, figsize=(8, 8), metric='euclidean', 
-                            truncate=False, plot=True, add_clusters=False, show_contracted=False):
+def hierarchical_clustering(df, k=10, metric='euclidean', truncate=False, add_clusters=False, cm=None):
     X = extract_data(df)
     Z = fastcluster.linkage(X, 'ward', metric=metric)
     max_d = Z[-k+1, 2]
     truncate_mode = 'lastp' if truncate else None
     labels = df['compound'].values
     groups = df['moa'] if 'moa' in df.columns else None
+    if truncate and groups is not None:
+        figsize = (8, 1 + 0.184 * len(groups.unique()))
+    else:
+        figsize = (8, 1 + 0.27 * len(labels))
     
-    if plot:
-        fig, ax = plt.subplots(figsize=figsize)
-        R = scipy.cluster.hierarchy.dendrogram(
-            Z,
-            labels=labels,
-            truncate_mode=truncate_mode,
-            p=k,
-            color_threshold=max_d,
-            leaf_font_size=8,
-            above_threshold_color='gray',
-            orientation='left',
-            ax=ax,
-            show_contracted=show_contracted,
-        )
-        [ax.spines[key].set_visible(False) for key in ['left', 'right', 'top', 'bottom']]
-        ax.invert_yaxis()
-        ax.set_xlabel(metric + ' distance')
-        ax.set_title('k=' + str(k))
-        
-        if groups is not None:
+    fig, ax = plt.subplots(figsize=figsize)
+    R = scipy.cluster.hierarchy.dendrogram(
+        Z,
+        labels=labels,
+        truncate_mode=truncate_mode,
+        p=k,
+        color_threshold=max_d,
+        leaf_font_size=8,
+        above_threshold_color='gray',
+        orientation='left',
+        ax=ax,
+        #show_contracted=show_contracted,
+    )
+    [ax.spines[key].set_visible(False) for key in ['left', 'right', 'top', 'bottom']]
+    ax.invert_yaxis()
+    ax.set_xlabel(metric + ' distance')
+    ax.set_title('k=' + str(k))
+
+    if groups is not None:
+        gn = groups.unique().shape[0]
+        if cm is not None:
+            pass
+        elif gn <= 10:
             cm = plt.cm.get_cmap('tab10')
-            if truncate:
-                lg = len(groups)
-                G = np.zeros([2 * lg - 1, len(groups.cat.categories)])
-                for ii, code in enumerate(groups.cat.codes):
-                    G[ii, code] = 1
-                for ii, row in enumerate(Z):
-                    G[lg + ii] = G[int(row[0])] + G[int(row[1])]
-                fig.canvas.draw() # recompute autoscaled limits
-                for ii, lbl in enumerate(ax.get_ymajorticklabels()):
-                    leave = R['leaves'][ii]
-                    gg = G[leave]
-                    tt, cc = [], []
-                    for jj, x in enumerate(gg):
-                        if not (x == 0.0 or jj == 7):
-                            tt.append('\u2b24' * int(x))
-                            cc.append(cm(jj))
-                    jj, x = 7, gg[7]
-                    if 0 < x <= 3:
+        elif gn <= 20:
+            cm = plt.cm.get_cmap('tab20')
+        else:
+            cm = plt.cm.get_cmap('tab20')
+        if truncate:
+            lg = len(groups)
+            G = np.zeros([2 * lg - 1, len(groups.cat.categories)])
+            for ii, code in enumerate(groups.cat.codes):
+                G[ii, code] = 1
+            for ii, row in enumerate(Z):
+                G[lg + ii] = G[int(row[0])] + G[int(row[1])]
+            fig.canvas.draw() # recompute autoscaled limits
+            for ii, lbl in enumerate(ax.get_ymajorticklabels()):
+                leave = R['leaves'][ii]
+                gg = G[leave]
+                tt, cc = [], []
+                for jj, x in enumerate(gg):
+                    if not (x == 0.0 or jj == gn-1):
                         tt.append('\u2b24' * int(x))
                         cc.append(cm(jj))
-                    elif 2 < x:
-                        tt.append(str(int(x)) + '\u00d7' + '\u2b24')
-                        cc.append(cm(jj))
-                    replace_with_rainbow_text(lbl, tt, cc, ax=ax, size=9, va='center_baseline', ha='left')    
-            else:
-                for lbl in ax.get_ymajorticklabels():
-                    iloc = np.where(labels == lbl._text)[0][0]
-                    moa = groups.cat.codes.iloc[iloc]
-                    if moa > -1:
-                        lbl.set_color(cm(int(moa)))
-                    else:
-                        lbl.set_color('silver')
-                ax.axvline(x=max_d, c='silver')
-            proxy_artists, labs = [], []
-            for moa in groups.cat.categories:
-                proxy_artists.append(mpl.lines.Line2D([0], [0]))
-                labs.append('\u2b24 ' + moa if truncate else moa)
-            legend = ax.legend(proxy_artists, labs, handletextpad=0, handlelength=0, loc='upper left')
-            for n, text in enumerate(legend.texts):
-                text.set_color(cm(n))
+                jj, x = gn-1, gg[gn-1]
+                if 0 < x <= 3:
+                    tt.append('\u2b24' * int(x))
+                    cc.append(cm(jj))
+                elif 2 < x:
+                    tt.append(str(int(x)) + '\u00d7' + '\u2b24')
+                    cc.append(cm(jj))
+                replace_with_rainbow_text(lbl, tt, cc, ax=ax, size=9, va='center_baseline', ha='left')    
+        else:
+            for lbl in ax.get_ymajorticklabels():
+                iloc = np.where(labels == lbl._text)[0][0]
+                moa = groups.cat.codes.iloc[iloc]
+                if moa < gn-1:
+                    #lbl.set_backgroundcolor(cm(int(moa)))
+                    lbl.set_bbox(dict(facecolor=cm(int(moa)), edgecolor='none', boxstyle='square,pad=0.1'))
+                else:
+                    pass
+                    #lbl.set_color('silver')
+            ax.axvline(x=max_d, c='silver')
+        proxy_artists, labs = [], []
+        for moa in groups.cat.categories:
+            proxy_artists.append(mpl.lines.Line2D([0], [0]))
+            labs.append('\u2b24 ' + moa if truncate else moa)
+        legend = fig.legend(proxy_artists, labs, handletextpad=0, handlelength=0, loc='upper left')
+        for n, text in enumerate(legend.texts):
+            text.set_bbox(dict(facecolor=cm(n), edgecolor='none', boxstyle='square,pad=0.1'))
+            #text.set_color(cm(n))
     if add_clusters:
         clusters = scipy.cluster.hierarchy.fcluster(Z, t=k, criterion='maxclust')
         df['cluster'] = pd.Categorical(clusters)
     
 fn = 'clustering_comparisons.csv'
-def evaluate_clustering(df, dr_method, k_min=10, k_max=30):
+def evaluate_clustering(df, dr_method, k_min=10, k_max=30, metric='euclidean'):
     if os.path.isfile(fn):
         ec = pd.read_csv(fn)
     else:
         ec = pd.DataFrame()
     X = extract_data(df)
-    Z = scipy.cluster.hierarchy.linkage(X, 'ward')
+    Z = scipy.cluster.hierarchy.linkage(X, 'ward', metric=metric)
     loc = df['moa'] != 'other'
     true = df.loc[loc, 'moa']
     ll = []
