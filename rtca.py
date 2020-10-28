@@ -387,91 +387,101 @@ def replace_with_rainbow_text(lbl, strings, colors, ax=None, **kwargs):
 
 def hierarchical_clustering(df, k=10, metric='euclidean', truncate=False, add_clusters=False, cm=None):
     X = extract_data(df)
-    Z = fastcluster.linkage(X, 'ward', metric=metric)
+    J = scipy.spatial.distance.pdist(X, metric=metric)
+    Z = scipy.cluster.hierarchy.linkage(J, method='ward')
+    if add_clusters:
+        clusters = scipy.cluster.hierarchy.fcluster(Z, t=k, criterion='maxclust')
+        df['cluster'] = pd.Categorical(clusters)
     max_d = Z[-k+1, 2]
     truncate_mode = 'lastp' if truncate else None
     labels = df['compound'].values
     groups = df['moa'] if 'moa' in df.columns else None
-    if truncate and groups is not None:
-        figsize = (8, 1 + 0.184 * len(groups.unique()))
-    else:
-        figsize = (8, 1 + 0.27 * len(labels))
-    
-    fig, ax = plt.subplots(figsize=figsize)
-    R = scipy.cluster.hierarchy.dendrogram(
-        Z,
-        labels=labels,
-        truncate_mode=truncate_mode,
-        p=k,
-        color_threshold=max_d,
+    fig, ax = plt.subplots(figsize=(8, 1))
+    dendrogram_with_groups(
+        Z, p=k, truncate_mode=truncate_mode, color_threshold=max_d, orientation='left', labels=labels,
         leaf_font_size=8,
         above_threshold_color='gray',
-        orientation='left',
         ax=ax,
-        #show_contracted=show_contracted,
+        groups=groups,
     )
     [ax.spines[key].set_visible(False) for key in ['left', 'right', 'top', 'bottom']]
     ax.invert_yaxis()
     ax.set_xlabel(metric + ' distance')
     ax.set_title('k=' + str(k))
+    if truncate:
+        fig.set_figheight(1 + 0.27 * len(groups.unique()))
+    else:
+        fig.set_figheight(1 + 0.184 * len(labels))
+        ax.axvline(x=max_d, c='silver')
+    
+def dendrogram_with_groups(Z, groups=None, cm=None, **kwargs):
+    R = scipy.cluster.hierarchy.dendrogram(Z, **kwargs)
 
-    if groups is not None:
+    if groups is  not None:
+        ax = plt.gca()
+        fig = ax.get_figure()
         gn = groups.unique().shape[0]
+        group_labels = groups.cat.categories
         if cm is not None:
             pass
         elif gn <= 10:
             cm = plt.cm.get_cmap('tab10')
-        elif gn <= 20:
-            cm = plt.cm.get_cmap('tab20')
         else:
             cm = plt.cm.get_cmap('tab20')
-        if truncate:
-            lg = len(groups)
-            G = np.zeros([2 * lg - 1, len(groups.cat.categories)])
+            
+        if kwargs.get('truncate_mode') == 'lastp':
+            transform = ax.get_yaxis_transform()
+            bbox = ax.get_window_extent().transformed(fig.dpi_scale_trans.inverted())
+            shift = 0.15 / bbox.width
+            gl = len(groups)
+            G = np.zeros([2 * gl - 1, len(groups.cat.categories)])
             for ii, code in enumerate(groups.cat.codes):
                 G[ii, code] = 1
             for ii, row in enumerate(Z):
-                G[lg + ii] = G[int(row[0])] + G[int(row[1])]
+                G[gl + ii] = G[int(row[0])] + G[int(row[1])]
+
             fig.canvas.draw() # recompute autoscaled limits
+            dots = [dict(x=[], y=[], n=[]) for i in range(gn)]
             for ii, lbl in enumerate(ax.get_ymajorticklabels()):
                 leave = R['leaves'][ii]
                 gg = G[leave]
-                tt, cc = [], []
-                for jj, x in enumerate(gg):
-                    if not (x == 0.0 or jj == gn-1):
-                        tt.append('\u2b24' * int(x))
-                        cc.append(cm(jj))
-                jj, x = gn-1, gg[gn-1]
-                if 0 < x <= 3:
-                    tt.append('\u2b24' * int(x))
-                    cc.append(cm(jj))
-                elif 2 < x:
-                    tt.append(str(int(x)) + '\u00d7' + '\u2b24')
-                    cc.append(cm(jj))
-                replace_with_rainbow_text(lbl, tt, cc, ax=ax, size=9, va='center_baseline', ha='left')    
+                x = 1 + shift
+                y = lbl.get_position()[1]
+                lbl.set_visible(False)
+                for group, n in enumerate(gg):
+                    a = 0
+                    if group == gn - 1 and n > 3:
+                        a = n
+                        n = 1
+                    for _ in range(int(n)):
+                        dots[group]['x'].append(x) 
+                        dots[group]['y'].append(y)
+                        dots[group]['n'].append(a)
+                        x += shift
+            for group, dd in enumerate(dots):
+                ax.scatter(dd['x'], dd['y'], s=60, c=[cm(group)], clip_on=False, label=group_labels[group], transform=transform)
+                if group == gn - 1:
+                    for ib, b in enumerate(dd['n']):
+                        if b > 0:
+                            ax.text(dd['x'][ib] + shift / 2, dd['y'][ib], '\u00d7' + str(int(b)), 
+                                    va='center', transform=transform)
+            ax.legend(loc='upper left')
         else:
-            for lbl in ax.get_ymajorticklabels():
-                iloc = np.where(labels == lbl._text)[0][0]
-                moa = groups.cat.codes.iloc[iloc]
+            for ii, lbl in enumerate(ax.get_ymajorticklabels()):
+                leave = R['leaves'][ii]
+                moa = groups.cat.codes.iloc[leave]
                 if moa < gn-1:
-                    #lbl.set_backgroundcolor(cm(int(moa)))
-                    lbl.set_bbox(dict(facecolor=cm(int(moa)), edgecolor='none', boxstyle='square,pad=0.1'))
-                else:
-                    pass
-                    #lbl.set_color('silver')
-            ax.axvline(x=max_d, c='silver')
-        proxy_artists, labs = [], []
-        for moa in groups.cat.categories:
-            proxy_artists.append(mpl.lines.Line2D([0], [0]))
-            labs.append('\u2b24 ' + moa if truncate else moa)
-        legend = fig.legend(proxy_artists, labs, handletextpad=0, handlelength=0, loc='upper left')
-        for n, text in enumerate(legend.texts):
-            text.set_bbox(dict(facecolor=cm(n), edgecolor='none', boxstyle='square,pad=0.1'))
-            #text.set_color(cm(n))
-    if add_clusters:
-        clusters = scipy.cluster.hierarchy.fcluster(Z, t=k, criterion='maxclust')
-        df['cluster'] = pd.Categorical(clusters)
-    
+                     lbl.set_bbox(dict(facecolor=cm(int(moa)), edgecolor='none', boxstyle='square,pad=0.1'))
+            
+            proxy_artists, labs = [], []
+            for moa in group_labels:
+                proxy_artists.append(mpl.lines.Line2D([0], [0]))
+                labs.append(moa)
+            legend = ax.legend(proxy_artists, labs, handletextpad=0, handlelength=0, loc='upper left')
+            for n, text in enumerate(legend.texts):
+                if n < gn-1:
+                    text.set_bbox(dict(facecolor=cm(n), edgecolor='none', boxstyle='square,pad=0.1'))
+                    
 fn = 'clustering_comparisons.csv'
 def evaluate_clustering(df, dr_method, k_min=10, k_max=30, metric='euclidean'):
     if os.path.isfile(fn):
@@ -491,7 +501,8 @@ def evaluate_clustering(df, dr_method, k_min=10, k_max=30, metric='euclidean'):
     ec = (pd.concat([ec, new])
           .drop_duplicates(['dr', 'k', 'index'],keep='last')
           .sort_values(['dr', 'k', 'index']))
-    ec.to_csv(fn, index=False) 
+    ec.to_csv(fn, index=False)
+    return new
 
 def remove_evaluation(method):
     ec = pd.read_csv(fn)
@@ -518,11 +529,14 @@ def plot_comparisons2():
         X = df.values.T
         for jj, method in enumerate(dr):
             if method.startswith('PCA'):
-                kwa = dict(label='PCA', color='red', lw=3, zorder=2)
+                kwa = dict(label='PCA', lw=3, zorder=2) #color='red', 
             elif method.startswith('CTRS'):
-                kwa = dict(label='CTRS', color='green', lw=3, zorder=3)
+                kwa = dict(label='CTRS', lw=3, zorder=3) #color='green',
             elif method.startswith('UMAP'):
                 kwa = dict(label='UMAP', color='silver', lw=3, zorder=1)
+            else:
+                kwa = dict(label=method, lw=3, zorder=1)
+                
 
             labels[kwa['label']] = ax[ii].plot(k, X[jj], alpha=.5, **kwa)[0]
         ax[ii].set_title(index)
