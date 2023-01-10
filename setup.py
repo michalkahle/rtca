@@ -8,4 +8,5 @@ setup(name='rtca',
       author_email='michalkahle@gmail.com',
       license='MIT',
       py_modules=['rtca', 'drc'],
+      install_requires=['pandas_access'],
       zip_safe=False)

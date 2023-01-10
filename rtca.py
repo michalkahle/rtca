@@ -295,7 +295,7 @@ def plot3d(dd, color=None, factor=None, cmap=None, hover=None, projection='UMAP'
     xc, yc, zc = (projection + str(x) for x in range(1, 4))
 
     trace_params = {'mode': 'markers', 'hoverinfo':'name+text'}
-    marker = {'colorscale': 'Jet', 'opacity': 1, 'size': 3}
+    marker = {'colorscale': 'turbo', 'opacity': 1, 'size': 3}
     layout = {'height': 600, 'margin': {'b': 0, 'l': 0, 'r': 0, 't': 0}, 
               'paper_bgcolor': '#f0f0f0', 'width': 800,
               'scene': {'xaxis':{'title':xc}, 'yaxis':{'title':yc}, 'zaxis':{'title':zc}}}
@@ -660,11 +660,11 @@ class CTRS():
         return f'CTRS({params_str})'
 
 def plot_ctrs(Y, ax=None):
-    jet = plt.get_cmap('jet')
+    turbo = plt.get_cmap('turbo')
     if ax is None: ax = plt.gca()
     l = Y.shape[0]
     for i in range(l):
-        ax.plot(cc, Y[i,:], color=jet(i/l), linewidth=1)
+        ax.plot(cc, Y[i,:], color=turbo(i/l), linewidth=1)
 
 def dg_ctrs(row, ylim=False, **kwargs):
     model = CTRS(**kwargs)
