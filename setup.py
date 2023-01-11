@@ -1,7 +1,7 @@
 from setuptools import setup
 
 setup(name='rtca',
-      version='0.1',
+      version='0.2',
       description='Load and analyze RTCA data.',
       url='http://github.com/michalkahle',
       author='Michal Kahle',
