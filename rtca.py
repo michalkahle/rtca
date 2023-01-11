@@ -385,34 +385,64 @@ def replace_with_rainbow_text(lbl, strings, colors, ax=None, **kwargs):
     lbl.set_visible(False)
     return ll
 
-def hierarchical_clustering(df, k=10, metric='euclidean', truncate=False, add_clusters=False, cm=None):
+def hierarchical_clustering(df, k=10, metric='euclidean', truncate=False, add_clusters=False,
+                            cm=None, number_clusters=True, optimal_ordering=False):
     X = extract_data(df)
     J = scipy.spatial.distance.pdist(X, metric=metric)
-    Z = scipy.cluster.hierarchy.linkage(J, method='ward')
-    if add_clusters:
-        clusters = scipy.cluster.hierarchy.fcluster(Z, t=k, criterion='maxclust')
-        df['cluster'] = pd.Categorical(clusters)
+    Z = scipy.cluster.hierarchy.linkage(J, method='ward', optimal_ordering=optimal_ordering)
     max_d = Z[-k+1, 2]
     truncate_mode = 'lastp' if truncate else None
     labels = df['compound'].values
     groups = df['moa'] if 'moa' in df.columns else None
     fig, ax = plt.subplots(figsize=(8, 1))
-    dendrogram_with_groups(
+    R = dendrogram_with_groups(
         Z, p=k, truncate_mode=truncate_mode, color_threshold=max_d, orientation='left', labels=labels,
         leaf_font_size=8,
         above_threshold_color='gray',
         ax=ax,
         groups=groups,
+        get_leaves=True
     )
+    if number_clusters:
+        crossings = []
+        for i, d in zip(R['icoord'], R['dcoord']):
+            for d0, d1, i in ((d[0], d[1], i[0]), (d[3], d[2], i[3])):
+                if d0 < max_d <= d1:
+                    crossings.append(i)
+
+
+        for n, i in enumerate(sorted(crossings)):
+            plt.annotate(n + 1, (max_d, i),
+        #                  xytext=(0, -5),
+        #                  textcoords='offset points',
+                         bbox=dict(boxstyle="round", fc="w", ec='silver', alpha=0.9),
+                         va='center', ha='center')
+
     [ax.spines[key].set_visible(False) for key in ['left', 'right', 'top', 'bottom']]
     ax.invert_yaxis()
-    ax.set_xlabel(metric + ' distance')
+    # ax.set_xlabel(metric + ' distance')
+    ax.xaxis.set_visible(False)
     ax.set_title('k=' + str(k))
     if truncate:
         fig.set_figheight(1 + 0.27 * len(groups.unique()))
     else:
         fig.set_figheight(1 + 0.184 * len(labels))
-        ax.axvline(x=max_d, c='silver')
+        # ax.axvline(x=max_d, c='silver')
+    if add_clusters:
+        highest_c = 2 * len(Z)
+        kk = None
+        ll = [highest_c]
+        for ii in range(1, 1 + len(Z)):
+            index = ll.index(highest_c - ii + 1)
+            if Z[-ii, 2] < max_d:
+                if not kk:
+                    kk = list(range(1, 1 + len(ll)))
+                kk = kk[:index] + [kk[index]] + kk[index:]
+            ll = ll[:index] + [Z[-ii, 0], Z[-ii, 1]] + ll[index + 1:]
+        clusters = pd.DataFrame(dict(compound=R['ivl'], cluster=pd.Categorical(kk)))
+
+        df = df.drop('cluster', axis=1, errors='ignore').merge(clusters)
+    return df
     
 def dendrogram_with_groups(Z, groups=None, cm=None, **kwargs):
     R = scipy.cluster.hierarchy.dendrogram(Z, **kwargs)
@@ -459,7 +489,8 @@ def dendrogram_with_groups(Z, groups=None, cm=None, **kwargs):
                         dots[group]['n'].append(a)
                         x += shift
             for group, dd in enumerate(dots):
-                ax.scatter(dd['x'], dd['y'], s=60, c=[cm(group)], clip_on=False, label=group_labels[group], transform=transform)
+                ax.scatter(dd['x'], dd['y'], s=60, c=[cm(group)], clip_on=False,
+                           label=group_labels[group], transform=transform)
                 if group == gn - 1:
                     for ib, b in enumerate(dd['n']):
                         if b > 0:
@@ -471,7 +502,8 @@ def dendrogram_with_groups(Z, groups=None, cm=None, **kwargs):
                 leave = R['leaves'][ii]
                 moa = groups.cat.codes.iloc[leave]
                 if moa < gn-1:
-                     lbl.set_bbox(dict(facecolor=cm(int(moa)), edgecolor='none', boxstyle='square,pad=0.1'))
+                     lbl.set_bbox(dict(facecolor=cm(int(moa)), edgecolor='none',
+                                       boxstyle='square,pad=0.1'))
             
             proxy_artists, labs = [], []
             for moa in group_labels:
@@ -481,6 +513,7 @@ def dendrogram_with_groups(Z, groups=None, cm=None, **kwargs):
             for n, text in enumerate(legend.texts):
                 if n < gn-1:
                     text.set_bbox(dict(facecolor=cm(n), edgecolor='none', boxstyle='square,pad=0.1'))
+    return R
                     
 fn = 'clustering_comparisons.csv'
 def evaluate_clustering(df, dr_method, k_min=10, k_max=30, metric='euclidean'):
@@ -502,7 +535,12 @@ def evaluate_clustering(df, dr_method, k_min=10, k_max=30, metric='euclidean'):
           .drop_duplicates(['dr', 'k', 'index'],keep='last')
           .sort_values(['dr', 'k', 'index']))
     ec.to_csv(fn, index=False)
-    return new
+    new = new.set_index(['k', 'index'])[['value']].unstack('index')
+    s = new.values.sum(axis=1)
+    n = new.index[s.argmax()]
+    row = new.loc[n, 'value']
+    ami, ari = row['AMI'], row['ARI']
+    print('Best clustering with %i clusters where AMI = %.2f and ARI = %.2f. ' % (n, ami, ari))
 
 def remove_evaluation(method):
     ec = pd.read_csv(fn)
@@ -540,9 +578,10 @@ def plot_comparisons2():
 
             labels[kwa['label']] = ax[ii].plot(k, X[jj], alpha=.5, **kwa)[0]
         ax[ii].set_title(index)
-        ax[ii].set_xlabel('# clusters')
         [ax[ii].spines[key].set_visible(False) for key in ['left', 'right', 'top', 'bottom']]
+    ax[0].set_ylabel('score')
     fig.legend(labels.values(), labels.keys(), loc=7) #ncol=3
+    fig.text(0.5, -0.1, 'number of clusters', ha='center')
     # fig.tight_layout()
     fig.subplots_adjust(right=0.85)
 #     fig.set_facecolor('pink')
@@ -601,26 +640,38 @@ def f_ctrs(p):
     return Yhat
 
 class CTRS():
-    """CTRS object"""
-    def __init__(self, cost='potency_invariant', **kwargs):
+    """CTRS approximates RTCA measurements by Hill equation in concentration direction
+    and Chebyshev polynomials in time direction.
+
+    Parameters
+    ----------
+    cost : str {'residuals', 'regularized', 'potency_invariant'}
+        Cost function for fitting.
+
+    lmbda : float
+        The weight of the regularization term.
+
+    """
+    def __init__(self, cost='potency_invariant', lmbda=1, **kwargs):
         self.cost = cost
+        self.lmbda = lmbda
         if cost == 'residuals':
-            self.costf = self.costf_residuals
+            self.costf = self.residuals
         elif cost == 'regularized':
-            self.costf = self.costf_regularized
+            self.costf = self.regularized
         elif cost == 'potency_invariant':
-            self.costf = self.costf_potency_invariant
+            self.costf = self.potency_invariant
         self.verbose = kwargs.pop('verbose', False)
         self.kwargs = kwargs
 
-    def costf_residuals(self, Y):
+    def residuals(self, Y):
         return lambda p: (f_ctrs(p) - Y).flatten()
 
-    def costf_regularized(self, Y):
-        return lambda p: np.concatenate([(f_ctrs(p) - Y).flatten(), p])
+    def regularized(self, Y):
+        return lambda p: np.concatenate([(f_ctrs(p) - Y).flatten(), p * self.lmbda])
 
-    def costf_potency_invariant(self, Y):
-        return lambda p: np.concatenate([(f_ctrs(p) - Y).flatten(), p[:10], p[11:]])
+    def potency_invariant(self, Y):
+        return lambda p: np.concatenate([(f_ctrs(p) - Y).flatten(), p[:10] * self.lmbda, p[11:] * self.lmbda])
 
     def fit(self, *args, **kwargs):
         return self
@@ -745,12 +796,19 @@ def compare_ctrs_group(original, ctrs, compounds, title=None, concentration_inde
                 
             row = original.query('cl == @cl & compound == @compound').iloc[0]
             Y = row.values.reshape([16,44]).T
-            plot_ctrs(Y, ax1[r+1, c * 2])
+            ax_orig = ax1[r+1, c * 2]
+            plot_ctrs(Y, ax_orig)
+            ax_orig.set_xticks(range(-8, -3, 2))
+            ax_orig.set_ylim(-8, 3)
 
             p = ctrs.query('cl == @cl & compound == @compound').copy().values.flatten()
             if concentration_independent:
                 p[10] = 0
-            plot_ctrs(f_ctrs(p), ax1[r+1, c * 2 + 1])
+            ax_restored = ax1[r+1, c * 2 + 1]
+            plot_ctrs(f_ctrs(p), ax_restored)
+            #ax_restored.set_facecolor('#eeeeee')
+            ax_restored.set_axis_off()
+            ax_restored.set_ylim(-8, 3)
 
             q = p.copy().reshape([3,10]).T
 #             q[0,1] = 0
